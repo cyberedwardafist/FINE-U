@@ -67,6 +67,21 @@ karena menjangkau blog, situs berita lokal, halaman tag, PDF, dan sejenisnya.
 | Brave Search | https://brave.com/search/api/ | Skema gratis berubah-ubah, cek paket terbaru. |
 | Google CSE | Key: https://console.cloud.google.com/apis/credentials (aktifkan Custom Search API). `cx`: https://programmablesearchengine.google.com/ | Menambah pencarian file `.pdf .docx .xlsx .pptx .csv`. Kuota gratis kecil. |
 
+## Mencari URL atau domain langsung
+
+Kalau yang kamu masukkan di "Mulai cari" sudah berupa alamat web atau domain
+(mis. `kampus.ac.id` atau `https://contoh.com/halaman`), FINE-U otomatis menambahkan:
+
+- **Alamat langsung**: mengambil halaman itu apa adanya (judul + deskripsi). Ini hanya
+  mengunjungi URL yang kamu kasih sendiri, bukan menebak-nebak URL lain.
+- **Wayback Machine**: salinan lama dari domain itu yang pernah disimpan Internet Archive.
+- **Common Crawl**: arsip web publik lain, dicari dengan cara serupa.
+
+FINE-U tidak menyertakan cara untuk menembus Cloudflare, CAPTCHA, atau proteksi anti-bot
+lain, dan tidak menebak-nebak pola URL untuk menarik data pribadi dari halaman yang sengaja
+disembunyikan (`noindex`, butuh login, dsb). Untuk halaman seperti itu, satu-satunya cara
+yang didukung adalah kamu memberi URL pastinya sendiri.
+
 ## Media sosial
 
 FINE-U tidak masuk ke akun siapa pun dan tidak melewati login. Hanya yang terlihat publik.

@@ -10,7 +10,7 @@
 umask 077   # file .env dan folder hasil/ hanya bisa dibaca pemilik
 
 BASE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-VERSION="1.2.0"
+VERSION="1.3.0"
 UA="FINE-U/$VERSION (personal research tool)"
 
 # ---------- warna ----------
@@ -258,6 +258,68 @@ src_europepmc() {
   fetch "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=$(urlenc "$1")&format=json&pageSize=8" \
     | jq '(.resultList.result // []) | map({title:(.title // "(tanpa judul)"),
         url:("https://europepmc.org/article/"+.source+"/"+.id), snippet:(.authorString // ""), date:((.pubYear // "")|tostring)})'
+}
+
+# --- Hanya aktif saat kueri berupa URL/domain: arsip & alamat langsung ---
+is_url_like() { [[ $1 =~ ^(https?://)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}([/:?#].*)?$ ]] && [[ $1 != *" "* ]]; }
+
+url_host() { # $1 = URL atau domain -> host polos (tanpa skema, tanpa www.)
+  local u=$1
+  [[ $u =~ ^https?:// ]] || u="http://$u"
+  jq -rn --arg u "$u" '$u | capture("^https?://(?<h>[^/:?#]+)").h // ""' | sed 's/^www\.//'
+}
+
+# Mengambil satu URL yang diberikan pengguna secara langsung (menggunakan Python bypass jika ada)
+src_direct_url() {
+  local u=$1 html title desc py_script="$BASE/bypass-fetch.py" json_out
+  [[ $u =~ ^https?:// ]] || u="https://$u"
+
+  # Cek apakah skrip python bypass tersedia dan python3 terpasang
+  if [ -f "$py_script" ] && command -v python3 >/dev/null 2>&1; then
+    # Jalankan skrip Python stealth untuk menembus proteksi
+    json_out=$(python3 "$py_script" "$u" 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$json_out" ]; then
+      title=$(jq -r '.title // empty' <<< "$json_out")
+      html=$(jq -r '.html // empty' <<< "$json_out")
+      [ -z "$title" ] && title=$u
+      # Ekstrak deskripsi dari HTML hasil render python
+      desc=$(grep -ioE '<meta[^>]*name=["'"'"']description["'"'"'][^>]*>' <<< "$html" | head -n1 \
+             | sed -E 's#.*content=["'"'"']([^"'"'"']*)["'"'"'].*#\1#i')
+      jq -n --arg t "$title" --arg u "$u" --arg s "${desc:-}" \
+        '[{title:($t|gsub("\\s+";" ")), url:$u, snippet:($s|gsub("\\s+";" ")), date:""}]'
+      return 0
+    fi
+  fi
+
+  # Fallback ke curl biasa jika python tidak dipakai
+  html=$(fetch -L "$u") || return 1
+  title=$(grep -ioE '<title[^>]*>[^<]*' <<< "$html" | head -n1 | sed -E 's#<title[^>]*>##i')
+  desc=$(grep -ioE '<meta[^>]*name=["'"'"']description["'"'"'][^>]*>' <<< "$html" | head -n1 \
+         | sed -E 's#.*content=["'"'"']([^"'"'"']*)["'"'"'].*#\1#i')
+  [ -z "$title" ] && title=$u
+  jq -n --arg t "$title" --arg u "$u" --arg s "${desc:-}" \
+    '[{title:($t|gsub("\\s+";" ")), url:$u, snippet:($s|gsub("\\s+";" ")), date:""}]'
+}
+
+# Wayback Machine (Internet Archive): salinan lama dari URL/domain yang sama.
+src_wayback() {
+  local host=$1
+  fetch "http://web.archive.org/cdx/search/cdx?url=$(urlenc "$host")&matchType=domain&collapse=urlkey&limit=15&output=json&filter=statuscode:200" \
+    | jq '(if (length // 0) > 1 then .[1:] else [] end)
+        | map({title:(.[2] + " (arsip " + (.[1]|tostring[0:8]) + ")"),
+               url:("https://web.archive.org/web/" + (.[1]|tostring) + "/" + .[2]),
+               snippet:"Wayback Machine", date:(.[1]|tostring)})'
+}
+
+# Common Crawl: indeks arsip web publik lain, dicari dengan cara serupa.
+src_commoncrawl() {
+  local host=$1 idx
+  idx=$(fetch "https://index.commoncrawl.org/collinfo.json" | jq -r '.[0].cdx-api // empty') || return 1
+  [ -z "$idx" ] && return 1
+  fetch "$idx?url=$(urlenc "$host")&matchType=domain&limit=15&output=json&filter=status:200" \
+    | jq -R -s 'split("\n") | map(select(length>0) | fromjson)
+        | map({title:(.url // .urlkey), url:(.url // ""), snippet:"Common Crawl", date:(.timestamp // "")})
+        | map(select(.url != ""))'
 }
 
 # --- Web umum tanpa key: DuckDuckGo (versi HTML). Bisa menolak jika dipakai terlalu sering. ---
@@ -614,6 +676,14 @@ run_scan() { # $1 = kueri ; hasil JSON di $REPORT
   done
   if [ "$SOCIAL_SEARCH" != 0 ] && social_backend >/dev/null && [ -n "$(soc_web_indices)" ]; then
     launch "Media sosial (web)" "Media sosial" exact 0 0 src_social_web "$q" ""
+  fi
+  if is_url_like "$q"; then
+    launch "Alamat langsung" "URL/domain" exact 1 0 src_direct_url "$q" ""
+    local host; host=$(url_host "$q")
+    if [ -n "$host" ]; then
+      launch "Wayback Machine" "URL/domain" exact 1 0 src_wayback "$host" ""
+      launch "Common Crawl" "URL/domain" exact 1 0 src_commoncrawl "$host" ""
+    fi
   fi
 
   # spinner + progres
