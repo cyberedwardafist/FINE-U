@@ -1,3 +1,7 @@
-hasil/
+# Rahasia: jangan pernah di-commit
 .env
+.env.*
+
+# Data pribadi hasil pencarian & konfigurasi lokal
+hasil/
 searxng/
