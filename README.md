@@ -5,13 +5,20 @@ Masukkan satu nama, lokasi, atau barang. FINE-U mencari ke banyak sumber sekalig
 (berita, ensiklopedia, forum, kode, buku, jurnal, web umum, dan media sosial),
 lalu hanya menampilkan sumber yang menemukan hasil, lengkap dengan link-nya.
 
+## butuh
+
+```bash
+pip install seleniumbase
+sudo apt update && sudo apt install -y seclists dirsearch
+sudo apt install -y curl jq gawk   # hanya jika belum ada
+```
+
 ## Menjalankan
 
 Butuh `bash`, `curl`, `jq`, dan `awk`. Di Kali Linux biasanya sudah ada.
 
 ```bash
-sudo apt install -y curl jq gawk   # hanya jika belum ada
-git clone https://github.com/USERNAME/fine-u.git
+git clone https://github.com/cyberedwardafist/fine-u.git
 cd fine-u
 chmod +x fine-u.sh setup-searxng.sh
 ./fine-u.sh
@@ -31,6 +38,11 @@ Tanpa menu:
 ./fine-u.sh -q "nama yang dicari"   # satu kali cari, hasil tersimpan
 ./fine-u.sh --status
 ./fine-u.sh --help
+```
+untuk bypass:
+
+```bash
+python3 bypass-fetch.py "https://halaman-target-yang-diproteksi.com"
 ```
 
 ## Akurasi dan cakupan
