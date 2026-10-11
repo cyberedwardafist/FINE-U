@@ -8,7 +8,7 @@ lalu hanya menampilkan sumber yang menemukan hasil, lengkap dengan link-nya.
 ## butuh
 
 ```bash
-pip install seleniumbase
+pip3 install seleniumbase
 sudo apt update && sudo apt install -y seclists dirsearch
 sudo apt install -y curl jq gawk   # hanya jika belum ada
 ```
