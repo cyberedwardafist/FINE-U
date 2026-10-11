@@ -1,24 +1,19 @@
 # FINE-U
 
-Pencarian informasi publik di internet dari terminal. Masukkan satu nama, lokasi,
-atau barang, lalu FINE-U mencari ke banyak sumber sekaligus dan hanya menampilkan
-sumber yang menemukan hasil, lengkap dengan link-nya.
+Pencarian informasi publik di internet dari terminal, ditulis dengan Bash.
+Masukkan satu nama, lokasi, atau barang. FINE-U mencari ke banyak sumber sekaligus
+dan hanya menampilkan sumber yang menemukan hasil, lengkap dengan link-nya.
 
 ## Menjalankan
 
-Butuh Node.js 18 atau lebih baru. Tidak ada package yang perlu di-install.
+Butuh `bash`, `curl`, dan `jq`. Di Kali Linux biasanya sudah ada.
 
 ```bash
+sudo apt install -y curl jq      # hanya jika belum ada
 git clone https://github.com/USERNAME/fine-u.git
 cd fine-u
-node index.js
-```
-
-Di Kali Linux, jika Node belum ada:
-
-```bash
-sudo apt update && sudo apt install -y nodejs
-node -v
+chmod +x fine-u.sh
+./fine-u.sh
 ```
 
 ## Cara pakai
@@ -34,7 +29,8 @@ hasil/<nama-yang-dicari>/<tanggal_jam>.md
 hasil/<nama-yang-dicari>/<tanggal_jam>.json
 ```
 
-Di layar tiap sumber menampilkan maksimal 5 hasil, daftar lengkapnya ada di file.
+Di layar tiap sumber menampilkan maksimal 5 hasil (ubah `MAX_PER_SOURCE` di
+`fine-u.sh`). Daftar lengkapnya ada di file.
 
 ## Sumber
 
