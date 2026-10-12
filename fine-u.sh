@@ -2397,14 +2397,15 @@ clean_all() { # semua riwayat (pencarian umum + cek email). Return 2 jika selesa
   return 2
 }
 
-clean_menu() { # return 2 jika ada tindakan selesai
+clean_menu() { # setelah hapus / batal, kembali ke menu ini (Enter kosong = ke Riwayat hasil)
   local ans notice="" rc
   while :; do
     header
     printf '  %sBERSIHKAN RIWAYAT%s  %s(pilih jenis yang mau dibersihkan)%s\n\n' "$B" "$R" "$D" "$R"
+    [ -n "$HIST_NOTICE" ] && { printf '  %s%s%s\n\n' "${HIST_NOTICE_CLR:-$GRN}" "$HIST_NOTICE" "$R"; HIST_NOTICE=""; }
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
-    printf '  %s[1]%s Cari  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
-    printf '  %s[2]%s Email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
+    printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
+    printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
     printf '  %s[3]%s Semua  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(( $(count_dirs "$BASE/hasil") + $(count_dirs "$EMAIL_DIR") ))" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
@@ -2417,7 +2418,6 @@ clean_menu() { # return 2 jika ada tindakan selesai
       3) clean_all || rc=$? ;;
       *) notice="Pilihan tidak valid. Ketik 1, 2, atau 3, atau kosongkan lalu Enter untuk kembali."; continue ;;
     esac
-    [ "$rc" -eq 2 ] && return 2
   done
 }
 
