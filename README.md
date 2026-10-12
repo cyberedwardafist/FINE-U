@@ -40,12 +40,20 @@ chmod +x fine-u.sh setup-searxng.sh
 
 ## Menu
 
+**FITUR** (pilih dengan angka):
+
 1. **Mulai cari**: ketik nama / lokasi / barang, lihat hasil, lalu pilih cari lagi atau kembali.
 2. **Cari email**: masukkan satu alamat email, FINE-U memeriksanya (lihat bagian "Cari email").
-3. **Riwayat hasil**: pilih jenis riwayat (pencarian umum atau cek email), lalu nomor untuk membuka hasil terakhir.
-4. **Status sumber**: sumber umum, media sosial, dan pemeriksaan email mana yang aktif.
-5. **Setting**: isi atau ubah API key dan preferensi. Disimpan ke `.env`.
-6. **Keluar**.
+
+**TAMBAHAN** (pilih dengan huruf, huruf besar atau kecil sama saja):
+
+- **H**: Riwayat hasil. Pilih jenis riwayat (pencarian umum atau cek email), lalu nomor untuk membuka hasil terakhir.
+- **S**: Status sumber. Sumber umum, media sosial, pemeriksaan email, dan limit harian mana yang aktif.
+- **P**: Setting. Isi atau ubah API key, preferensi, dan **limit harian per API**. Disimpan ke `.env`.
+- **X**: Keluar.
+
+Salah ketik atau salah tekan tidak menutup program: FINE-U menampilkan pesan "Input tidak dikenali" lalu
+meminta input lagi, jadi tidak perlu dijalankan ulang.
 
 Tanpa menu:
 
@@ -81,6 +89,7 @@ temuan (nama, username, akun terhubung), dan detail tiap pemeriksaan.
 | EmailRep | Reputasi, jumlah referensi, pertama/terakhir terlihat, platform tempat email terdeteksi. |
 | LeakCheck | Muncul di berapa kebocoran data, sumbernya, dan jenis data yang terpapar (tanpa isi kredensial). |
 | Pivoting username | Menebak username dari bagian sebelum `@` dan membuat tautan GitHub/GitLab/Instagram. Hanya tebakan: halaman tidak dibuka, tidak mempengaruhi skor. |
+| Platform kreatif | Memeriksa apakah profil publik dengan username tebakan (bagian sebelum `@`) ada di 23 platform: Figma, Canva, Pinterest, Behance, Dribbble, ArtStation, DeviantArt, Flickr, 500px, Unsplash, Pexels, SoundCloud, Vimeo, Medium, Tumblr, Linktree, Ko-fi, Patreon, Gumroad, Itch.io, Sketchfab, CodePen, Etsy. **Bukan cek email terdaftar**, hanya tebakan username, tidak mempengaruhi skor. Tiap platform dites dulu dengan username acak; jika situs membalas "ada" untuk semua nama atau memblokir bot, ditandai "tidak bisa dipastikan" (bukan temuan). Platform baru: tambah satu baris di `KREATIF_PLATFORMS` dalam `fine-u.sh`. |
 | Jejak di web | Mencari alamat persis lewat semua sumber umum yang aktif; hanya halaman yang memuat alamat itu secara harfiah yang ditampilkan. |
 
 **Dengan key (isi di Setting, opsional):**
@@ -112,6 +121,34 @@ keperluan yang sah (verifikasi, keamanan, penelusuran alamat milikmu sendiri ata
 
 Hasil disimpan di `hasil-email/<email>/<tanggal_jam>.md` dan `.json`.
 
+## Limit harian per API
+
+Banyak API gratis membatasi pemakaian (mis. 100 permintaan per hari). Di menu **Setting**, bagian
+**Limit harian**, kamu bisa mengatur batas sendiri untuk tiap layanan berkunci:
+
+| Layanan | Kunci di `.env` | Layanan | Kunci di `.env` |
+|---|---|---|---|
+| Tavily | `LIMIT_TAVILY` | ZeroBounce | `LIMIT_ZEROBOUNCE` |
+| Brave Search | `LIMIT_BRAVE` | IPQualityScore | `LIMIT_IPQS` |
+| Google CSE | `LIMIT_CSE` | EmailRep | `LIMIT_EMAILREP` |
+| YouTube Data API | `LIMIT_YOUTUBE` | DeHashed | `LIMIT_DEHASHED` |
+| HaveIBeenPwned | `LIMIT_HIBP` | SEON | `LIMIT_SEON` |
+| Hunter | `LIMIT_HUNTER` | Abstract Email | `LIMIT_ABSTRACT` |
+
+- Isi angka bulat, mis. `100`. Ketik `-` (atau `0`) untuk **tanpa batas / unlimited**, sama seperti sebelum ada limiter (bawaan).
+- Yang dihitung adalah **setiap permintaan** yang benar-benar dikirim ke API, bukan jumlah pencarian.
+  Satu pencarian bisa memakai beberapa permintaan (varian kueri, kelompok media sosial, file `.pdf` dsb.).
+- Begitu batas tercapai, permintaan berikutnya **tidak dikirim** dan layar menampilkan
+  "Batas harian tercapai: ...". Sumber lain tetap jalan. Untuk media sosial dengan `SOCIAL_BACKEND=auto`,
+  FINE-U otomatis pindah ke mesin web lain yang masih punya jatah.
+- Hitungan **reset otomatis tiap tengah malam** (jam lokal komputer). Di menu Setting, ketik `r`
+  untuk mereset hitungan hari ini secara manual.
+- Sisa jatah terlihat di menu Setting dan di **Status sumber** (`./fine-u.sh --status`).
+- Hitungan disimpan di `cache/usage/<tanggal>/<layanan>` (sudah di `.gitignore`), dan catatan lebih dari
+  7 hari dihapus otomatis. Penambahan hitungan dikunci (`flock`), jadi tetap akurat walau banyak sumber jalan paralel.
+- Hitungan dibuat dari sisi FINE-U, jadi hanya mencatat pemakaian lewat FINE-U. Pemakaian lain dari key yang sama
+  tidak ikut terhitung. Beri jarak aman dari batas asli penyedia (mis. isi 90 jika batas resminya 100).
+
 ## Akurasi dan cakupan
 
 Setiap hasil diberi skor kecocokan terhadap kata yang dicari, ditampilkan sebagai
@@ -128,7 +165,7 @@ Atur lewat menu **Setting > Mode pencarian** (`SEARCH_MODE`):
 
 Catatan: mode `seimbang` dan `luas` mengirim lebih dari satu permintaan per sumber web
 berkunci (Tavily, Brave, Google CSE), jadi kuota gratisnya terpakai lebih cepat.
-Pakai `akurat` jika ingin berhemat.
+Pakai `akurat` jika ingin berhemat, dan atur **Limit harian** di Setting supaya kuota tidak terlewat.
 
 ## Sumber
 

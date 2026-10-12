@@ -11,7 +11,7 @@
 umask 077   # file .env dan folder hasil/ hanya bisa dibaca pemilik
 
 BASE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-VERSION="1.4.1"
+VERSION="1.5.0"
 UA="FINE-U/$VERSION (personal research tool)"
 
 # ---------- daftar user-agent acak untuk rotasi (anti-blocking sederhana) ----------
@@ -43,7 +43,9 @@ ENV_KEYS=(SEARXNG_URL TAVILY_API_KEY BRAVE_API_KEY GOOGLE_CSE_KEY GOOGLE_CSE_CX
           SEARXNG_LANG SEARXNG_PAGES SOCIAL_SEARCH SOCIAL_BACKEND
           SOCIAL_GROUP_SIZE CURL_TIMEOUT
           HIBP_API_KEY HUNTER_API_KEY ABSTRACT_API_KEY ZEROBOUNCE_API_KEY IPQS_API_KEY
-          EMAILREP_API_KEY DEHASHED_API_KEY SEON_API_KEY EMAIL_WEB_SCAN UA_ROTATE)
+          EMAILREP_API_KEY DEHASHED_API_KEY SEON_API_KEY EMAIL_WEB_SCAN UA_ROTATE
+          LIMIT_TAVILY LIMIT_BRAVE LIMIT_CSE LIMIT_YOUTUBE LIMIT_HIBP LIMIT_HUNTER
+          LIMIT_ABSTRACT LIMIT_ZEROBOUNCE LIMIT_IPQS LIMIT_EMAILREP LIMIT_DEHASHED LIMIT_SEON)
 
 is_env_key() { local k; for k in "${ENV_KEYS[@]}"; do [ "$k" = "$1" ] && return 0; done; return 1; }
 
@@ -91,6 +93,83 @@ set_env() { # $1=KUNCI $2=NILAI
 
 load_env
 apply_defaults
+
+# ---------- limiter harian ----------
+# Membatasi jumlah PERMINTAAN API per hari untuk tiap layanan berkunci, supaya kuota gratis
+# (mis. 100/hari) tidak habis. Diatur di menu Setting (LIMIT_<LAYANAN>); 0 / kosong = tanpa batas.
+# Hitungan disimpan di cache/usage/<tanggal>/<layanan> dan reset otomatis tiap tengah malam
+# (jam lokal). Sumber berjalan paralel, jadi penambahan hitungan dikunci (flock) agar akurat.
+QUOTA_DIR="$BASE/cache/usage"
+LIM_ID=(tavily brave cse youtube hibp hunter abstract zerobounce ipqs emailrep dehashed seon)
+LIM_NAME=("Tavily" "Brave Search" "Google CSE" "YouTube Data API" "HaveIBeenPwned" "Hunter"
+          "Abstract Email" "ZeroBounce" "IPQualityScore" "EmailRep" "DeHashed" "SEON")
+
+quota_label() { # $1=id -> nama tampilan
+  local j; for j in "${!LIM_ID[@]}"; do [ "${LIM_ID[j]}" = "$1" ] && { printf '%s' "${LIM_NAME[j]}"; return; }; done
+  printf '%s' "$1"
+}
+
+quota_limit() { # $1=id -> angka limit per hari (0 = tanpa batas)
+  local v="LIMIT_${1^^}"; v=${!v:-}
+  [[ $v =~ ^[0-9]+$ ]] && printf '%d' "$((10#$v))" || printf '0'
+}
+
+quota_used() { # $1=id -> permintaan terpakai hari ini
+  local d u; printf -v d '%(%F)T' -1
+  u=$(cat "$QUOTA_DIR/$d/$1" 2>/dev/null)
+  [[ $u =~ ^[0-9]+$ ]] && printf '%d' "$((10#$u))" || printf '0'
+}
+
+quota_ok() { # $1=id -> masih ada sisa jatah hari ini? (hanya cek, tidak menambah hitungan)
+  local l; l=$(quota_limit "$1")
+  [ "$l" -eq 0 ] || [ "$(quota_used "$1")" -lt "$l" ]
+}
+
+_quota_inc() { # memakai $api $lim $f dari quota_take
+  local used; used=$(cat "$f" 2>/dev/null)
+  [[ $used =~ ^[0-9]+$ ]] || used=0
+  used=$((10#$used))
+  if [ "$lim" -gt 0 ] && [ "$used" -ge "$lim" ]; then return 1; fi
+  printf '%d\n' "$((used + 1))" > "$f"
+}
+
+# Dipanggil tepat sebelum SETIAP permintaan ke API berkunci.
+# Return 0 = boleh lanjut (hitungan +1), 1 = batas harian tercapai (permintaan tidak dikirim).
+quota_take() { # $1=id
+  local api=$1 lim d f rc lk tries=0
+  lim=$(quota_limit "$api")
+  printf -v d '%(%F)T' -1
+  f="$QUOTA_DIR/$d/$api"
+  mkdir -p "$QUOTA_DIR/$d" 2>/dev/null || return 0   # tidak bisa menulis: jangan blokir pencarian
+  if command -v flock >/dev/null 2>&1; then
+    ( flock -w 10 9 || exit 0; _quota_inc ) 9> "$QUOTA_DIR/.lock"; rc=$?
+  else
+    lk="$QUOTA_DIR/.lk"
+    until mkdir "$lk" 2>/dev/null; do
+      tries=$((tries + 1)); [ "$tries" -gt 100 ] && break
+      sleep 0.05
+    done
+    _quota_inc; rc=$?
+    rmdir "$lk" 2>/dev/null
+  fi
+  if [ "$rc" -ne 0 ] && [ -n "${QUOTA_MARK:-}" ]; then printf '%s\n' "$api" >> "$QUOTA_MARK"; fi
+  return "$rc"
+}
+
+quota_reset_today() { local d; printf -v d '%(%F)T' -1; rm -rf "${QUOTA_DIR:?}/$d"; }
+
+quota_prune() { # hapus catatan lebih dari 7 hari
+  [ -d "$QUOTA_DIR" ] && find "$QUOTA_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
+  return 0
+}
+
+# Catatan di layar jika ada layanan yang kena batas harian. $1 = JSON yang punya kunci "quota": ["tavily", ...]
+quota_hit_note() {
+  local api names=()
+  while IFS= read -r api; do [ -n "$api" ] && names+=("$(quota_label "$api")"); done < <(jq -r '(.quota // [])[]' <<< "$1" 2>/dev/null)
+  [ "${#names[@]}" -eq 0 ] && return 0
+  local IFS=,; printf '  %sBatas harian tercapai: %s. Naikkan di Setting > Limit harian, atau tunggu besok.%s\n\n' "$YEL" "${names[*]//,/, }" "$R"
+}
 
 FILE_TYPES=(pdf docx xlsx pptx csv)
 
@@ -384,6 +463,7 @@ src_searxng_files() {
 }
 
 src_tavily() {
+  quota_take tavily || return 1
   jq -n --arg q "$(webq "$1")" '{query:$q, max_results:15, search_depth:"basic"}' \
     | fetch -X POST -H "Authorization: Bearer $TAVILY_API_KEY" -H "Content-Type: application/json" \
         -d @- "https://api.tavily.com/search" \
@@ -391,6 +471,7 @@ src_tavily() {
 }
 
 src_brave() {
+  quota_take brave || return 1
   fetch -H "X-Subscription-Token: $BRAVE_API_KEY" -H "Accept: application/json" \
     "https://api.search.brave.com/res/v1/web/search?q=$(urlenc "$(webq "$1")")&count=20" \
     | jq '(.web.results // []) | map({title:(.title|gsub("<[^>]+>";"")), url,
@@ -398,6 +479,7 @@ src_brave() {
 }
 
 src_cse() { # $1=query $2=parameter tambahan (mis. &fileType=pdf)
+  quota_take cse || return 1
   fetch "https://www.googleapis.com/customsearch/v1?key=$GOOGLE_CSE_KEY&cx=$GOOGLE_CSE_CX&q=$(urlenc "$(webq "$1")")$2" \
     | jq '(.items // []) | map({title, url:.link, snippet:(.snippet // ""), date:""})'
 }
@@ -464,6 +546,7 @@ src_duolingo() { # hanya untuk username tanpa spasi
 
 src_youtube() { # pakai YouTube Data API bila ada key; jika tidak, YouTube dicari lewat mesin web
   [ -n "${YOUTUBE_API_KEY:-}" ] || return 1
+  quota_take youtube || return 1
   fetch "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video,channel&maxResults=10&q=$(urlenc "$(webq "$1")")&key=$YOUTUBE_API_KEY" \
     | jq "$JQ_DEC"'(.items // []) | map({title:(.snippet.title|dec),
         url:(if .id.videoId then "https://www.youtube.com/watch?v=" + .id.videoId else "https://www.youtube.com/channel/" + (.id.channelId // "") end),
@@ -573,9 +656,9 @@ soc "Strava"         web "strava.com"
 backend_ok() {
   case "$1" in
     searxng) [ -n "${SEARXNG_URL:-}" ] ;;
-    tavily)  [ -n "${TAVILY_API_KEY:-}" ] ;;
-    brave)   [ -n "${BRAVE_API_KEY:-}" ] ;;
-    cse)     [ -n "${GOOGLE_CSE_KEY:-}" ] && [ -n "${GOOGLE_CSE_CX:-}" ] ;;
+    tavily)  [ -n "${TAVILY_API_KEY:-}" ] && quota_ok tavily ;;
+    brave)   [ -n "${BRAVE_API_KEY:-}" ] && quota_ok brave ;;
+    cse)     [ -n "${GOOGLE_CSE_KEY:-}" ] && [ -n "${GOOGLE_CSE_CX:-}" ] && quota_ok cse ;;
     *) return 1 ;;
   esac
 }
@@ -610,6 +693,7 @@ social_group() { # $1=mesin $2="indeks indeks ..." $3=kueri
   for i in $idxs; do for d in ${SOC_DOM[i]}; do doms+=("$d"); done; done
   wq=$(VARIANT=exact webq "$q")
   site=$(printf 'site:%s OR ' "${doms[@]}"); site="(${site% OR })"
+  case "$be" in tavily|brave|cse) quota_take "$be" || return 1 ;; esac
   case "$be" in
     searxng)
       fetch "${SEARXNG_URL%/}/search?q=$(urlenc "$wq $site")&format=json&language=${SEARXNG_LANG:-all}" \
@@ -663,6 +747,7 @@ launch() { # nama kategori varian percaya jeda fungsi kueri argumen
   printf '%s|%s|%s|%s' "$name" "$cat" "$var" "$trust" > "$TMP/$id.meta"
   (
     set -o pipefail
+    QUOTA_MARK="$TMP/$id.quota"
     [ "$delay" != 0 ] && sleep "$delay"
     if VARIANT=$var "$fn" "$q" "$arg" > "$TMP/$id.tmp" 2>/dev/null; then mv "$TMP/$id.tmp" "$TMP/$id.json"
     else echo '[]' > "$TMP/$id.json"; : > "$TMP/$id.fail"; fi
@@ -727,8 +812,11 @@ run_scan() { # $1 = kueri ; hasil JSON di $REPORT
           then ($it | group_by(.platform)[] | {source:.[0].platform, category:$c, variant:$v, trust:$t, items:.})
           else {source:$s, category:$c, variant:$v, trust:$t, items:$it} end' \
       "$TMP/$id.json" >> "$TMP/all.ndjson" 2>/dev/null
-    if [ -f "$TMP/$id.fail" ]; then echo "$name" >> "$TMP/fails"; else echo "$name" >> "$TMP/oks"; fi
+    if [ -f "$TMP/$id.fail" ] && [ ! -f "$TMP/$id.quota" ]; then echo "$name" >> "$TMP/fails"; else echo "$name" >> "$TMP/oks"; fi
   done
+  local quota_json
+  quota_json=$(cat "$TMP"/*.quota 2>/dev/null | sort -u | jq -R -s -c 'split("\n") | map(select(length>0))')
+  [ -z "$quota_json" ] && quota_json='[]'
   # gagal hanya jika semua varian sumber itu gagal
   failed_json=$(sort -u "$TMP/fails" | grep -vxFf "$TMP/oks" | jq -R -s -c 'split("\n") | map(select(length>0) | {source:.})')
   [ -z "$failed_json" ] && failed_json='[]'
@@ -738,7 +826,8 @@ run_scan() { # $1 = kueri ; hasil JSON di $REPORT
   local took=$(( ($(date +%s%N) - started) / 1000000 ))
 
   REPORT=$(jq -s --arg q "$q" --arg date "$(date -Iseconds)" --arg mode "$SEARCH_MODE" \
-      --argjson min "$min" --argjson took "$took" --argjson tried "$tried" --argjson failed "$failed_json" '
+      --argjson min "$min" --argjson took "$took" --argjson tried "$tried" --argjson failed "$failed_json" \
+      --argjson quota "$quota_json" '
     def norm: ascii_downcase | gsub("[-_/.+,:;()|\"]";" ") | gsub("%20";" ") | gsub("\\s+";" ") | sub("^ ";"") | sub(" $";"");
     def toks: [match("[\\p{L}\\p{N}]+";"g").string] | map(select(length >= 2)) | unique;
     def canon: (.url | ascii_downcase) | sub("#.*$";"") | sub("^https?://(www\\.)?";"") | sub("/+$";"");
@@ -781,7 +870,7 @@ run_scan() { # $1 = kueri ; hasil JSON di $REPORT
         | map(select(.rank >= $min)) | sort_by(-.rank)))
     | map(select(.items | length > 0))
     | sort_by(-(.items | map(.rank) | max))
-    | {query:$q, date:$date, mode:$mode, tookMs:$took, sourcesTried:$tried, found:., failed:$failed}
+    | {query:$q, date:$date, mode:$mode, tookMs:$took, sourcesTried:$tried, found:., failed:$failed, quota:$quota}
     | . + {total:([.found[].items | length] | add // 0)}' "$TMP/all.ndjson")
   rm -rf "$TMP"; TMP=""
 }
@@ -793,7 +882,7 @@ show_report() {
   if [ "$total" -eq 0 ]; then
     printf '  %sTidak ada hasil untuk "%s" (mode %s).%s\n' "$YEL" "$QUERY" "$SEARCH_MODE" "$R"
     [ "$SEARCH_MODE" != luas ] && printf '  %sCoba mode "luas" di menu Setting untuk hasil yang lebih longgar.%s\n' "$D" "$R"
-    printf '\n'; return
+    printf '\n'; quota_hit_note "$REPORT"; return
   fi
   found=$(jq -r '.found|length' <<< "$REPORT")
   failed=$(jq -r '.failed|length' <<< "$REPORT")
@@ -814,6 +903,7 @@ show_report() {
          then "    \($D)… +\((.items|length) - $max) lagi, lengkap di file hasil\($R)" else empty end),
       ""' <<< "$REPORT"
   [ "$failed" -gt 0 ] && printf '  %s%s sumber tidak bisa dijangkau saat ini.%s\n\n' "$D" "$failed" "$R"
+  quota_hit_note "$REPORT"
 }
 
 slugify() {
@@ -1216,6 +1306,7 @@ em_emailrep() {
   local e=$1 j prof
   local -a h=() _L=() _K=() _F=()
   [ -n "${EMAILREP_API_KEY:-}" ] && h=(-H "Key: $EMAILREP_API_KEY")
+  quota_take emailrep || return 1
   j=$(fetch "${h[@]}" "https://emailrep.io/$(urlenc "$e")") || return 1
   jq -e '.reputation' >/dev/null 2>&1 <<< "$j" || return 1
   local rep susp refs delta=0 state=ok flags=() fs ls
@@ -1266,6 +1357,7 @@ em_leakcheck() {
 em_hibp() {
   local e=$1 r code body pr pcode pbody n
   local -a _L=() _K=() _F=()
+  quota_take hibp || return 1
   r=$(http_get -H "hibp-api-key: $HIBP_API_KEY" "https://haveibeenpwned.com/api/v3/breachedaccount/$(urlenc "$e")?truncateResponse=false") || return 1
   code=${r##*$'\n'}; body=${r%$'\n'*}
   case "$code" in
@@ -1279,7 +1371,7 @@ em_hibp() {
       | "\(.Title) (\(.BreachDate // "?")): \((.DataClasses // []) | .[:6] | join(", "))"' <<< "$body")
   [ "$n" -gt 8 ] && addl "" "… +$((n - 8)) kebocoran lain"
   addl "Semua jenis data" "$(jq -r '[.[].DataClasses[]?] | unique | join(", ")' <<< "$body")"
-  pr=$(http_get -H "hibp-api-key: $HIBP_API_KEY" "https://haveibeenpwned.com/api/v3/pasteaccount/$(urlenc "$e")") && {
+  quota_take hibp && pr=$(http_get -H "hibp-api-key: $HIBP_API_KEY" "https://haveibeenpwned.com/api/v3/pasteaccount/$(urlenc "$e")") && {
     pcode=${pr##*$'\n'}; pbody=${pr%$'\n'*}
     [ "$pcode" = 200 ] && addl "Paste publik" "muncul di $(jq 'length' <<< "$pbody") paste (mis. Pastebin)"
   }
@@ -1291,6 +1383,7 @@ em_hibp() {
 em_hunter() {
   local e=$1 j st sc delta=0 state=ok nsrc
   local -a _L=() _K=() _F=()
+  quota_take hunter || return 1
   j=$(fetch -G --data-urlencode "email=$e" --data-urlencode "api_key=$HUNTER_API_KEY" "https://api.hunter.io/v2/email-verifier") || return 1
   jq -e '.data' >/dev/null 2>&1 <<< "$j" || return 1
   st=$(jq -r '.data.status // "unknown"' <<< "$j"); sc=$(jq -r '.data.score // "?"' <<< "$j")
@@ -1316,6 +1409,7 @@ em_hunter() {
 em_abstract() {
   local e=$1 j dl q delta=0 state=ok
   local -a _L=() _K=() _F=()
+  quota_take abstract || return 1
   j=$(fetch -G --data-urlencode "email=$e" --data-urlencode "api_key=$ABSTRACT_API_KEY" "https://emailvalidation.abstractapi.com/v1/") || return 1
   jq -e '.email' >/dev/null 2>&1 <<< "$j" || return 1
   dl=$(jq -r '.deliverability // "UNKNOWN"' <<< "$j"); q=$(jq -r '.quality_score // "?"' <<< "$j")
@@ -1336,6 +1430,7 @@ em_abstract() {
 em_zerobounce() {
   local e=$1 j st sub fn ln delta=0 state=ok
   local -a _L=() _K=() _F=()
+  quota_take zerobounce || return 1
   j=$(fetch -G --data-urlencode "api_key=$ZEROBOUNCE_API_KEY" --data-urlencode "email=$e" --data-urlencode "ip_address=" \
         "https://api.zerobounce.net/v2/validate") || return 1
   jq -e '.status' >/dev/null 2>&1 <<< "$j" || return 1
@@ -1359,6 +1454,7 @@ em_zerobounce() {
 em_ipqs() {
   local e=$1 j fs delta=0 state=ok
   local -a _L=() _K=() _F=()
+  quota_take ipqs || return 1
   j=$(fetch "https://www.ipqualityscore.com/api/json/email/$IPQS_API_KEY/$(urlenc "$e")") || return 1
   jq -e '.success == true' >/dev/null 2>&1 <<< "$j" || return 1
   fs=$(jq -r '.fraud_score // 0' <<< "$j")
@@ -1437,6 +1533,7 @@ em_ghunt() {
 em_dehashed() {
   local e=$1 r code body n
   local -a _L=() _K=() _F=()
+  quota_take dehashed || return 1
   r=$(http_get -X POST -H "Dehashed-Api-Key: $DEHASHED_API_KEY" -H 'Content-Type: application/json' \
         -d "$(jq -nc --arg q "email:$e" '{query:$q, page:1, size:100}')" "https://api.dehashed.com/v2/search") || return 1
   code=${r##*$'\n'}; body=${r%$'\n'*}
@@ -1472,6 +1569,7 @@ em_dehashed() {
 em_seon() {
   local e=$1 r code body sc delta=0 state=ok accts
   local -a _L=() _K=() _F=()
+  quota_take seon || return 1
   r=$(http_get -H "X-API-KEY: $SEON_API_KEY" "https://api.seon.io/SeonRestService/email-api/v2.2/$(urlenc "$e")") || return 1
   code=${r##*$'\n'}; body=${r%$'\n'*}
   [ "$code" = 200 ] || return 1
@@ -1500,7 +1598,7 @@ em_seon() {
 
 # ---------- 9. pivoting username (tebakan, tanpa permintaan jaringan) ----------
 # Nama sebelum @ sering dipakai juga sebagai username. Ini hanya TEBAKAN: halamannya tidak dibuka,
-# tidak ikut menaikkan skor, dan tidak dimasukkan ke "Temuan pengayaan utama".
+# tidak ikut menaikkan skor (delta 0). Username-nya tetap ditampilkan di "Temuan pengayaan utama".
 # ---------- 9. pivoting username (ekstraksi & tautan pintar) ----------
 em_pivoting() {
   local e=$1 l=${1%@*} u
@@ -1524,7 +1622,92 @@ em_pivoting() {
   addk "Telegram Profil" "https://t.me/$u"
   addk "WhatsMyName OSINT" "https://whatsmyname.app/?q=$u"
 
-  emit pivoting "Pivoting username" ok 5 "Username \"$u\" berhasil diekstrak untuk pivoting OSINT"
+  emit pivoting "Pivoting username" ok 0 "Username \"$u\" berhasil diekstrak untuk pivoting OSINT"
+}
+
+# ---------- 10. platform kreatif & desain (cek profil publik dari tebakan username) ----------
+# BUKAN cek "email terdaftar". Yang diperiksa hanya: apakah halaman profil publik dengan username
+# tebakan (bagian sebelum @) ada di platform itu. Tiap platform dikontrol dulu dengan username acak
+# yang pasti tidak ada. Jika situs membalas "ada" juga untuk username acak itu (atau memblokir bot,
+# atau butuh login), hasilnya ditandai "tidak bisa dipastikan" dan TIDAK dihitung sebagai temuan.
+# Tidak menembus proteksi anti-bot dan tidak mengubah skor. Username umum sering dipakai orang lain.
+# Menambah platform = tambah satu baris "Nama|URL" (pakai {u} untuk username) di daftar ini.
+KREATIF_PLATFORMS=(
+  "Figma|https://www.figma.com/@{u}"
+  "Canva|https://www.canva.com/p/{u}/"
+  "Pinterest|https://www.pinterest.com/{u}/"
+  "Behance|https://www.behance.net/{u}"
+  "Dribbble|https://dribbble.com/{u}"
+  "ArtStation|https://www.artstation.com/{u}"
+  "DeviantArt|https://www.deviantart.com/{u}"
+  "Flickr|https://www.flickr.com/people/{u}"
+  "500px|https://500px.com/p/{u}"
+  "Unsplash|https://unsplash.com/@{u}"
+  "Pexels|https://www.pexels.com/@{u}"
+  "SoundCloud|https://soundcloud.com/{u}"
+  "Vimeo|https://vimeo.com/{u}"
+  "Medium|https://medium.com/@{u}"
+  "Tumblr|https://{u}.tumblr.com"
+  "Linktree|https://linktr.ee/{u}"
+  "Ko-fi|https://ko-fi.com/{u}"
+  "Patreon|https://www.patreon.com/{u}"
+  "Gumroad|https://{u}.gumroad.com"
+  "Itch.io|https://{u}.itch.io"
+  "Sketchfab|https://sketchfab.com/{u}"
+  "CodePen|https://codepen.io/{u}"
+  "Etsy|https://www.etsy.com/people/{u}"
+)
+
+kreatif_code() { # $1=URL -> kode HTTP akhir (setelah maks. 3 redirect); 000 jika gagal
+  local c
+  c=$(curl -s -o /dev/null -L --max-redirs 3 --max-time "$CURL_TIMEOUT" -A "$(get_random_ua)" -w '%{http_code}' "$1" 2>/dev/null)
+  printf '%s' "${c: -3}"
+}
+
+em_kreatif() {
+  local e=$1 l=${1%@*} u ctl d p n=0 f st nm ur
+  local -a _L=() _K=() _F=() found=() unsure=()
+  local checked=0 none=0
+  u=${l%%+*}
+  if [ "${#u}" -lt 3 ] || [ "${#u}" -gt 40 ] || [[ ! $u =~ ^[A-Za-z0-9._-]+$ ]] || [[ $ROLE_LOCAL == *" $u "* ]]; then
+    addl "Username" "Dilewati (nama terlalu pendek/panjang, berisi karakter tak lazim, atau akun peran/umum)"
+    emit kreatif "Platform kreatif" info 0 "dilewati"
+    return 0
+  fi
+  ctl="fineu$(printf '%05x%05x' "$RANDOM" "$RANDOM")"
+  d=$(mktemp -d) || return 1
+  for p in "${KREATIF_PLATFORMS[@]}"; do
+    n=$((n + 1)); nm=${p%%|*}
+    # platform bergaya subdomain (nama.situs.com) hanya menerima huruf, angka, dan "-"
+    if [[ ${p#*|} == "https://{u}."* ]] && [[ ! $u =~ ^[A-Za-z0-9-]+$ ]]; then continue; fi
+    (
+      local tpl=${p#*|} cu cc
+      cu=$(kreatif_code "${tpl//'{u}'/$u}"); cc=$(kreatif_code "${tpl//'{u}'/$ctl}")
+      if [ "$cc" = 404 ] || [ "$cc" = 410 ]; then
+        if [ "$cu" = 200 ]; then st=found; else st=none; fi
+      else st=unsure; fi
+      printf '%s|%s|%s\n' "$st" "$nm" "${tpl//'{u}'/$u}" > "$d/$n"
+    ) &
+  done
+  wait
+  for ((f = 1; f <= n; f++)); do
+    [ -f "$d/$f" ] || continue
+    IFS='|' read -r st nm ur < "$d/$f"
+    checked=$((checked + 1))
+    case "$st" in
+      found)  found+=("$nm"); addl "$nm" "profil publik ada: $ur"; addk "$nm" "$ur" ;;
+      unsure) unsure+=("$nm") ;;
+      *)      none=$((none + 1)) ;;
+    esac
+  done
+  rm -rf "$d"
+  local j sep="" out=""
+  if [ "${#unsure[@]}" -gt 0 ]; then
+    for j in "${unsure[@]}"; do out+="$sep$j"; sep=", "; done
+    addl "Tidak bisa dipastikan" "$out (situs memblokir bot, butuh login, atau membalas \"ada\" untuk username acak)"
+  fi
+  addl "Catatan" "Tebakan dari username \"$u\", belum tentu pemilik email yang sama. Ini bukan bukti email terdaftar."
+  emit kreatif "Platform kreatif" info 0 "${#found[@]} profil publik cocok, ${#unsure[@]} tidak bisa dipastikan, dari $checked platform (username \"$u\")"
 }
 
 # ---------- daftar modul ----------
@@ -1544,6 +1727,7 @@ register_em "GitHub"               "Jejak digital"   em_github
 register_em "Kunci PGP"            "Jejak digital"   em_pgp
 register_em "EmailRep"             "Jejak digital"   em_emailrep
 register_em "Pivoting username"    "Jejak digital"   em_pivoting
+register_em "Platform kreatif"     "Jejak digital"   em_kreatif
 register_em "SEON"                 "Jejak digital"   em_seon       SEON_API_KEY
 register_em "Holehe"               "Jejak digital"   em_holehe     cmd:holehe
 register_em "GHunt"                "Jejak digital"   em_ghunt      cmd:ghunt
@@ -1573,6 +1757,7 @@ run_email_scan() { # $1 = email (huruf kecil, sudah valid) ; hasil di $EREPORT d
     printf '%s|%s' "${EM_NAME[i]}" "${EM_CAT[i]}" > "$ETMP/$id.meta"
     (
       set -o pipefail
+      QUOTA_MARK="$ETMP/$id.quota"
       if "${EM_FN[i]}" "$e" > "$ETMP/$id.tmp" 2>/dev/null && jq -e 'type == "object"' "$ETMP/$id.tmp" >/dev/null 2>&1; then
         mv "$ETMP/$id.tmp" "$ETMP/$id.json"
       else : > "$ETMP/$id.fail"; fi
@@ -1588,8 +1773,10 @@ run_email_scan() { # $1 = email (huruf kecil, sudah valid) ; hasil di $EREPORT d
     if [ -f "$ETMP/$id.json" ]; then
       jq -c --arg c "$cat" '. + {category:$c}' "$ETMP/$id.json" >> "$ETMP/all.ndjson"
     else
-      jq -nc --arg t "$name" --arg c "$cat" \
-        '{id:"gagal", title:$t, state:"fail", delta:0, summary:"tidak bisa dijangkau saat ini", lines:[], links:[], facts:[], category:$c}' >> "$ETMP/all.ndjson"
+      local why="tidak bisa dijangkau saat ini"
+      [ -s "$ETMP/$id.quota" ] && why="batas harian tercapai (atur di Setting > Limit harian)"
+      jq -nc --arg t "$name" --arg c "$cat" --arg w "$why" \
+        '{id:"gagal", title:$t, state:"fail", delta:0, summary:$w, lines:[], links:[], facts:[], category:$c}' >> "$ETMP/all.ndjson"
     fi
   done
   took=$(( ($(date +%s%N) - started) / 1000000 ))
@@ -1671,8 +1858,9 @@ render_email_report() {
     REPORT=$(jq -c '.mentions' <<< "$EREPORT")
     show_report
   fi
+  [ "$mt" -eq 0 ] && quota_hit_note "$(jq -c '.mentions' <<< "$EREPORT")"
   local nf; nf=$(jq -r '.failed | length' <<< "$EREPORT")
-  [ "$nf" -gt 0 ] && printf '  %s%s pemeriksaan tidak bisa dijangkau: %s%s\n\n' "$D" "$nf" "$(jq -r '.failed | join(", ")' <<< "$EREPORT")" "$R"
+  [ "$nf" -gt 0 ] && printf '  %s%s pemeriksaan tidak dijalankan (tidak terjangkau / batas harian): %s%s\n\n' "$D" "$nf" "$(jq -r '.failed | join(", ")' <<< "$EREPORT")" "$R"
   printf '  %sSkor adalah perkiraan dari sinyal publik, bukan jaminan. Gunakan dengan bertanggung jawab (UU PDP).%s\n\n' "$D" "$R"
 }
 
@@ -1790,6 +1978,25 @@ print_social_status() {
   fi
 }
 
+print_quota_status() {
+  local j api lim used any=0
+  printf '\n  %sLIMIT HARIAN%s  %s(permintaan API per hari, reset tiap tengah malam)%s\n' "$B" "$R" "$D" "$R"
+  for j in "${!LIM_ID[@]}"; do
+    api=${LIM_ID[j]}; lim=$(quota_limit "$api"); used=$(quota_used "$api")
+    [ "$lim" -eq 0 ] && [ "$used" -eq 0 ] && continue
+    any=1
+    if [ "$lim" -eq 0 ]; then
+      printf '  %s○%s %-20s %s%d terpakai · tanpa batas%s\n' "$D" "$R" "${LIM_NAME[j]}" "$D" "$used" "$R"
+    elif [ "$used" -ge "$lim" ]; then
+      printf '  %s✖%s %-20s %s%d/%d · BATAS TERCAPAI%s\n' "$RED" "$R" "${LIM_NAME[j]}" "$RED" "$used" "$lim" "$R"
+    else
+      printf '  %s●%s %-20s %s%d/%d · sisa %d%s\n' "$GRN" "$R" "${LIM_NAME[j]}" "$D" "$used" "$lim" "$((lim - used))" "$R"
+    fi
+  done
+  [ "$any" -eq 0 ] && printf '  %sBelum ada limit. Atur di menu Setting > Limit harian (0 = tanpa batas).%s\n' "$D" "$R"
+  return 0
+}
+
 print_status() {
   local i act=0 total=0
   for i in "${!SRC_NAME[@]}"; do
@@ -1806,6 +2013,7 @@ print_status() {
   printf '  %s(mode pencarian: %s)%s\n' "$D" "$SEARCH_MODE" "$R"
   print_social_status
   print_email_status
+  print_quota_status
   printf '\n'
   if [ -f "$BASE/.env" ]; then printf '  %sKonfigurasi: %s%s\n' "$D" "$BASE/.env" "$R"
   else printf '  %sBelum ada .env. Buka menu Setting untuk mengisi API yang kamu punya.%s\n' "$D" "$R"; fi
@@ -1826,6 +2034,31 @@ menu() { # $1 = fungsi penggambar layar; sisanya = pilihan. Hasil di $CHOICE
     read -r ans || exit 0
     if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#opts[@]} )); then CHOICE=$ans; return; fi
     notice="Pilihan tidak valid. Ketik angka 1 sampai ${#opts[@]}."
+  done
+}
+
+# Menu utama: FITUR dipilih dengan angka, TAMBAHAN dengan huruf (besar/kecil sama saja).
+# Input salah tidak menutup program: tampil pesan, lalu input diminta lagi. Hasil di $CHOICE (1 2 h s p x).
+main_menu() {
+  local notice="" ans shown
+  while :; do
+    header
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  %sFITUR%s\n' "$B" "$R"
+    printf '  %s[1]%s Mulai cari\n' "$B$CYN" "$R"
+    printf '  %s[2]%s Cari email\n\n' "$B$CYN" "$R"
+    printf '  %sTAMBAHAN%s\n' "$B" "$R"
+    printf '  %s[H]%s Riwayat hasil\n' "$B$CYN" "$R"
+    printf '  %s[S]%s Status sumber\n' "$B$CYN" "$R"
+    printf '  %s[P]%s Setting\n' "$B$CYN" "$R"
+    printf '  %s[X]%s Keluar\n' "$B$CYN" "$R"
+    printf '\n  Pilih menu: '
+    read -r ans || exit 0
+    ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}; ans=${ans,,}
+    case "$ans" in 1|2|h|s|p|x) CHOICE=$ans; return ;; esac
+    shown=${ans//[[:cntrl:]]/}; shown=${shown:0:20}
+    if [ -z "$shown" ]; then notice="Input kosong. Pilih 1 atau 2 untuk fitur, atau H / S / P / X untuk menu tambahan."
+    else notice="Input tidak dikenali: \"$shown\". Pilih 1 atau 2 untuk fitur, atau H / S / P / X untuk menu tambahan."; fi
   done
 }
 
@@ -1861,10 +2094,11 @@ view_file() {
 }
 
 history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label
-  local base=$1 title=$2 expr=$3 dirs d last n q ans i
+  local base=$1 title=$2 expr=$3 dirs d last n q ans i notice=""
   while :; do
     header
     printf '  %s%s%s\n\n' "$B" "$title" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     mapfile -t dirs < <(find "$base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
     if [ "${#dirs[@]}" -eq 0 ]; then
       printf '  Belum ada hasil tersimpan untuk jenis ini.\n\n'; pause; return
@@ -1883,6 +2117,9 @@ history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label
     [ -z "$ans" ] && return
     if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#dirs[@]} )); then
       view_file "$(find "${dirs[ans-1]}" -name '*.md' | sort | tail -n1)"
+    else
+      if [ "${#dirs[@]}" -eq 1 ]; then notice="Input tidak valid. Ketik angka 1, atau kosongkan lalu Enter untuk kembali."
+      else notice="Input tidak valid. Ketik angka 1 sampai ${#dirs[@]}, atau kosongkan lalu Enter untuk kembali."; fi
     fi
   done
 }
@@ -1926,7 +2163,7 @@ SET_KEY=(SEARXNG_URL TAVILY_API_KEY BRAVE_API_KEY GOOGLE_CSE_KEY GOOGLE_CSE_CX Y
          HIBP_API_KEY HUNTER_API_KEY ABSTRACT_API_KEY ZEROBOUNCE_API_KEY IPQS_API_KEY EMAILREP_API_KEY
          DEHASHED_API_KEY SEON_API_KEY
          SEARCH_MODE MAX_PER_SOURCE SEARXNG_LANG SOCIAL_SEARCH SOCIAL_BACKEND EMAIL_WEB_SCAN)
-SET_SPLIT=15   # jumlah item "kunci & alamat API"; sisanya masuk "Preferensi"
+SET_SPLIT=15   # jumlah item "kunci & alamat API"; berikutnya "Preferensi"; lalu "Limit harian" (SET_SPLIT2)
 SET_LABEL=("SearXNG (alamat URL)" "Tavily (API key)" "Brave Search (API key)" "Google CSE (API key)"
            "Google CSE (cx)" "YouTube Data API (key)" "GitHub (token)"
            "HaveIBeenPwned (key)" "Hunter (key)" "Abstract Email (key)" "ZeroBounce (key)" "IPQualityScore (key)"
@@ -1959,6 +2196,14 @@ SET_HINT=(
   "Cek email: ikut mencari alamat itu di semua sumber umum (web, berita, kode, media sosial). Mati = lebih cepat dan hemat kuota."
 )
 
+# Item "Limit harian": satu baris per layanan berkunci (kunci LIMIT_<LAYANAN>, tipe num).
+SET_SPLIT2=${#SET_KEY[@]}
+for _j in "${!LIM_ID[@]}"; do
+  SET_KEY+=("LIMIT_${LIM_ID[_j]^^}"); SET_LABEL+=("Limit ${LIM_NAME[_j]}"); SET_TYPE+=(num); SET_OPTS+=("")
+  SET_HINT+=("Maksimal permintaan ${LIM_NAME[_j]} per hari (sesuai kuota API-mu, mis. 100). Ketik "-" (atau 0) untuk tanpa batas / unlimited. Hitungan reset tiap tengah malam (jam lokal).")
+done
+unset _j
+
 mask_value() { # $1=nilai $2=tipe
   local v=$1
   [ -z "$v" ] && { printf '(kosong)'; return; }
@@ -1971,6 +2216,7 @@ default_for() {
   case "$1" in
     SEARCH_MODE) echo seimbang ;; MAX_PER_SOURCE) echo 5 ;; SEARXNG_LANG) echo all ;;
     SOCIAL_SEARCH) echo 1 ;; SOCIAL_BACKEND) echo auto ;; EMAIL_WEB_SCAN) echo 1 ;;
+    LIMIT_*) echo 0 ;;
   esac
 }
 
@@ -2015,7 +2261,11 @@ edit_setting() { # $1 = indeks
       read -r ch || exit 0
       if [[ $ch =~ ^[0-9]+$ ]] && (( ch >= 1 && ch <= ${#opts[@]} )); then new=${opts[ch-1]}; else new=""; fi ;;
     *)
-      printf '  Nilai baru (Enter = batal, "-" = hapus / kembali ke bawaan): '
+      if [[ $k == LIMIT_* ]]; then
+        printf '  Isi angka limit per hari (Enter = batal, "-" atau 0 = tanpa batas): '
+      else
+        printf '  Nilai baru (Enter = batal, "-" = hapus / kembali ke bawaan): '
+      fi
       read -r new || exit 0
       new=${new#"${new%%[![:space:]]*}"}; new=${new%"${new##*[![:space:]]}"} ;;
   esac
@@ -2028,17 +2278,20 @@ edit_setting() { # $1 = indeks
                    SET_NOTICE="Alamat harus diawali http:// atau https://"; SET_NOTICE_OK=0; return; fi ;;
     MAX_PER_SOURCE) if [ -n "$new" ] && { [[ ! $new =~ ^[0-9]+$ ]] || (( new < 1 || new > 50 )); }; then
                    SET_NOTICE="Isi angka 1 sampai 50."; SET_NOTICE_OK=0; return; fi ;;
+    LIMIT_*) if [ -n "$new" ] && { [[ ! $new =~ ^[0-9]+$ ]] || (( ${#new} > 7 )); }; then
+                   SET_NOTICE="Isi angka bulat (0 = tanpa batas)."; SET_NOTICE_OK=0; return; fi ;;
     SEARXNG_LANG) if [ -n "$new" ] && [[ ! $new =~ ^(all|[a-z]{2,3}([-_][A-Za-z]{2,4})?)$ ]]; then
                    SET_NOTICE="Contoh yang valid: all, id, en, en-US"; SET_NOTICE_OK=0; return; fi ;;
   esac
 
   set_env "$k" "$new" || { SET_NOTICE="Gagal menulis .env."; SET_NOTICE_OK=0; return; }
   export "$k=$new"; apply_defaults
-  if [ -z "$new" ]; then SET_NOTICE="${SET_LABEL[i]} dihapus."; else SET_NOTICE="${SET_LABEL[i]} tersimpan di .env."; fi
+  if [ -z "$new" ] && [[ $k == LIMIT_* ]]; then SET_NOTICE="${SET_LABEL[i]} dihapus: tanpa batas (unlimited)."
+  elif [ -z "$new" ]; then SET_NOTICE="${SET_LABEL[i]} dihapus."; else SET_NOTICE="${SET_LABEL[i]} tersimpan di .env."; fi
 }
 
 settings_screen() {
-  local i k t v dot n=${#SET_KEY[@]} ans
+  local i k t v dot n=${#SET_KEY[@]} ans api lim used col
   SET_NOTICE=""
   while :; do
     header
@@ -2048,9 +2301,20 @@ settings_screen() {
     for ((i = 0; i < n; i++)); do
       k=${SET_KEY[i]}; t=${SET_TYPE[i]}; v="${!k:-}"
       if [ "$i" -eq "$SET_SPLIT" ]; then printf '\n  %sPreferensi%s\n' "$B" "$R"; fi
+      if [ "$i" -eq "$SET_SPLIT2" ]; then
+        printf '\n  %sLimit harian%s  %s(maks. permintaan API per hari; 0 = tanpa batas)%s\n' "$B" "$R" "$D" "$R"
+      fi
       if [ "$i" -lt "$SET_SPLIT" ]; then
         if [ -n "$v" ]; then dot="${GRN}●${R}"; else dot="${D}○${R}"; fi
         printf '  %s[%2d]%s %-26s %s %s\n' "$B$CYN" "$((i + 1))" "$R" "${SET_LABEL[i]}" "$dot" "$(mask_value "$v" "$t")"
+      elif [ "$i" -ge "$SET_SPLIT2" ]; then
+        api=${k#LIMIT_}; api=${api,,}; lim=$(quota_limit "$api"); used=$(quota_used "$api"); col=$D
+        [ "$lim" -gt 0 ] && [ "$used" -ge "$lim" ] && col=$RED
+        if [ "$lim" -eq 0 ]; then
+          printf '  %s[%2d]%s %-26s %stanpa batas · terpakai hari ini: %d%s\n' "$B$CYN" "$((i + 1))" "$R" "${SET_LABEL[i]}" "$D" "$used" "$R"
+        else
+          printf '  %s[%2d]%s %-26s %s%d per hari · terpakai hari ini: %d%s\n' "$B$CYN" "$((i + 1))" "$R" "${SET_LABEL[i]}" "$col" "$lim" "$used" "$R"
+        fi
       else
         [ "$t" = bool ] && { [ "${v:-1}" = 0 ] && v=mati || v=aktif; }
         printf '  %s[%2d]%s %-26s %s%s%s\n' "$B$CYN" "$((i + 1))" "$R" "${SET_LABEL[i]}" "$D" "${v:-$(default_for "$k")}" "$R"
@@ -2062,9 +2326,12 @@ settings_screen() {
       else printf '  %s%s%s\n\n' "$RED" "$SET_NOTICE" "$R"; fi
       SET_NOTICE=""
     fi
-    printf '  Nomor yang ingin diubah (Enter = kembali): '
+    printf '  Nomor yang ingin diubah (r = reset hitungan hari ini, Enter = kembali): '
     read -r ans || exit 0
     [ -z "$ans" ] && return
+    if [ "$ans" = r ] || [ "$ans" = R ]; then
+      quota_reset_today; SET_NOTICE="Hitungan pemakaian API hari ini direset."; SET_NOTICE_OK=1; continue
+    fi
     if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= n )); then
       edit_setting $((ans - 1))
     else
@@ -2090,7 +2357,7 @@ Pemakaian:
   ./fine-u.sh --status        daftar sumber aktif / nonaktif
   ./fine-u.sh --help          bantuan ini
 
-API dan preferensi diatur lewat menu Setting (disimpan di .env, tidak ikut Git).
+API, preferensi, dan limit harian per API diatur lewat menu Setting (disimpan di .env, tidak ikut Git).
 USAGE
 }
 
@@ -2114,6 +2381,7 @@ cli_search() {
 }
 
 main() {
+  quota_prune
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --status)  check_deps; print_status; exit 0 ;;
@@ -2133,14 +2401,14 @@ main() {
   trap cleanup EXIT
   trap 'exit 130' INT TERM
   while :; do
-    menu header "Mulai cari" "Cari email" "Riwayat hasil" "Status sumber" "Setting" "Keluar"
+    main_menu
     case "$CHOICE" in
       1) search_session ;;
       2) email_session ;;
-      3) history_session ;;
-      4) status_screen ;;
-      5) settings_screen ;;
-      6) clear_screen; printf '%sSampai jumpa.%s\n' "$D" "$R"; exit 0 ;;
+      h) history_session ;;
+      s) status_screen ;;
+      p) settings_screen ;;
+      x) clear_screen; printf '%sSampai jumpa.%s\n' "$D" "$R"; exit 0 ;;
     esac
   done
 }
