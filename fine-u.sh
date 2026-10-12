@@ -408,7 +408,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed_path = self.path.split("?")[0]
-        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_")
+        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_").replace(".", "_")
         ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
 
         if parsed_path == "/save-location":
