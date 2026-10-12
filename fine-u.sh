@@ -175,15 +175,20 @@ FILE_TYPES=(pdf docx xlsx pptx csv)
 
 clear_screen() { [ -t 1 ] && printf '\033[2J\033[3J\033[H'; }
 
+LOGO=(
+  "███████╗██╗███╗   ██╗███████╗      ██╗   ██╗"
+  "██╔════╝██║████╗  ██║██╔════╝      ██║   ██║"
+  "█████╗  ██║██╔██╗ ██║█████╗  █████╗██║   ██║"
+  "██╔══╝  ██║██║╚██╗██║██╔══╝  ╚════╝██║   ██║"
+  "██║     ██║██║ ╚████║███████╗      ╚██████╔╝"
+  "╚═╝     ╚═╝╚═╝  ╚═══╝╚══════╝       ╚═════╝ "
+)
+
 header() {
   clear_screen
   printf '\n'
-  printf '  %s%s%s\n' "$B$CYN" "███████╗██╗███╗   ██╗███████╗      ██╗   ██╗" "$R"
-  printf '  %s%s%s\n' "$B$CYN" "██╔════╝██║████╗  ██║██╔════╝      ██║   ██║" "$R"
-  printf '  %s%s%s\n' "$B$CYN" "█████╗  ██║██╔██╗ ██║█████╗  █████╗██║   ██║" "$R"
-  printf '  %s%s%s\n' "$B$CYN" "██╔══╝  ██║██║╚██╗██║██╔══╝  ╚════╝██║   ██║" "$R"
-  printf '  %s%s%s\n' "$B$CYN" "██║     ██║██║ ╚████║███████╗      ╚██████╔╝" "$R"
-  printf '  %s%s%s\n' "$B$CYN" "╚═╝     ╚═╝╚═╝  ╚═══╝╚══════╝       ╚═════╝ " "$R"
+  local l
+  for l in "${LOGO[@]}"; do printf '  %s%s%s\n' "$B$CYN" "$l" "$R"; done
   printf '  %sPencarian informasi publik di internet & Pengayaan OSINT%s\n' "$D" "$R"
   printf '  %s────────────────────────────────────────────%s\n\n' "$D" "$R"
 }
@@ -2038,12 +2043,106 @@ menu() { # $1 = fungsi penggambar layar; sisanya = pilihan. Hasil di $CHOICE
   done
 }
 
+# ---------- UPDATE dari GitHub ----------
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+
+update_worker() { # $1 = file status: baris 1 state, 2 pesan, 3 hash lama, 4 hash baru
+  local out=$1 old new up msg
+  export GIT_TERMINAL_PROMPT=0
+  if ! command -v git >/dev/null; then printf 'error\nGit belum terpasang. Install: sudo apt install -y git\n\n\n' > "$out"; return; fi
+  if ! git -C "$BASE" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'error\nFolder ini bukan hasil git clone, jadi tidak bisa diperbarui otomatis.\n\n\n' > "$out"; return
+  fi
+  old=$(git -C "$BASE" rev-parse --short HEAD 2>/dev/null)
+  if ! msg=$(timeout 60 git -C "$BASE" fetch --quiet origin 2>&1); then
+    printf 'error\nTidak bisa menghubungi GitHub: %s\n%s\n\n' "$(tr '\n' ' ' <<< "$msg" | cut -c1-160)" "$old" > "$out"; return
+  fi
+  up=$(git -C "$BASE" rev-parse --verify -q '@{u}' 2>/dev/null)
+  if [ -z "$up" ]; then printf 'error\nBranch ini belum terhubung ke GitHub (upstream).\n%s\n\n' "$old" > "$out"; return; fi
+  if [ "$(git -C "$BASE" rev-parse HEAD)" = "$up" ] || git -C "$BASE" merge-base --is-ancestor "$up" HEAD 2>/dev/null; then
+    printf 'uptodate\nSudah versi terbaru.\n%s\n%s\n' "$old" "$old" > "$out"; return
+  fi
+  if ! msg=$(git -C "$BASE" merge --ff-only "$up" 2>&1); then
+    printf 'error\nGagal menggabungkan pembaruan (ada perubahan lokal yang bentrok). Jalankan manual: git stash && git pull\n%s\n\n' "$old" > "$out"; return
+  fi
+  new=$(git -C "$BASE" rev-parse --short HEAD)
+  printf 'updated\nBerhasil diperbarui.\n%s\n%s\n' "$old" "$new" > "$out"
+}
+
+# animasi: blok bergerak selama proses berjalan, lalu bar penuh
+update_loading() { # $1 = pid worker
+  local pid=$1 w=32 pos=0 dir=1 n=0 i bar frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  clear_screen
+  printf '\n\n  %sMEMPERBARUI FINE-U%s\n\n\n' "$B$CYN" "$R"
+  while kill -0 "$pid" 2>/dev/null || [ "$n" -lt 20 ]; do
+    bar=""
+    for ((i = 0; i < w; i++)); do
+      if [ "$i" -ge "$pos" ] && [ "$i" -lt $((pos + 6)) ]; then bar+="█"; else bar+="░"; fi
+    done
+    printf '\r  %s%s%s %s[%s]%s %sMenghubungi GitHub...%s\033[K' "$CYN" "${frames[n % 10]}" "$R" "$CYN" "$bar" "$R" "$D" "$R"
+    pos=$((pos + dir)); [ "$pos" -ge $((w - 6)) ] && dir=-1; [ "$pos" -le 0 ] && dir=1
+    n=$((n + 1)); sleep 0.05
+  done
+  for ((pos = 0; pos <= w; pos += 2)); do
+    bar=""; for ((i = 0; i < w; i++)); do [ "$i" -lt "$pos" ] && bar+="█" || bar+="░"; done
+    printf '\r  %s✓%s %s[%s]%s %sSelesai%s\033[K' "$GRN" "$R" "$GRN" "$bar" "$R" "$D" "$R"; sleep 0.02
+  done
+  sleep 0.25
+}
+
+# animasi: bar berubah menjadi logo FINE-U (muncul dari kiri ke kanan dengan efek noise)
+update_logo() {
+  local LC_ALL=C.UTF-8 w=0 l k j rest real noise=(░ ▒ ▓ █)
+  for l in "${LOGO[@]}"; do [ "${#l}" -gt "$w" ] && w=${#l}; done
+  clear_screen
+  for ((k = 0; k <= w + 6; k += 2)); do
+    printf '\033[H\n'
+    for l in "${LOGO[@]}"; do
+      real=${l:0:k}; rest=""
+      for ((j = k; j < k + 6 && j < ${#l}; j++)); do rest+="${noise[RANDOM % 4]}"; done
+      printf '  %s%s%s%s%s%s\033[K\n' "$B$CYN" "$real" "$R" "$D" "$rest" "$R"
+    done
+    sleep 0.025
+  done
+}
+
+update_session() {
+  local f st msg old new pid
+  if [ ! -t 1 ]; then
+    f=$(mktemp); update_worker "$f"; { read -r st; read -r msg; } < "$f"; rm -f "$f"; echo "$msg"; return
+  fi
+  f=$(mktemp)
+  update_worker "$f" & pid=$!
+  update_loading "$pid"
+  wait "$pid" 2>/dev/null
+  { read -r st; read -r msg; read -r old; read -r new; } < "$f"; rm -f "$f"
+  case "$st" in
+    updated)
+      update_logo
+      printf '\n  %s✓ Berhasil diperbarui%s  %s%s → %s%s\n' "$GRN" "$R" "$D" "$old" "$new" "$R"
+      sleep 1.2
+      MAIN_NOTICE="✓ FINE-U sudah diperbarui ($old → $new). Sekarang memakai versi terbaru."
+      clear_screen
+      FINEU_RELOAD_NOTICE="$MAIN_NOTICE" exec bash "$SELF" ;;
+    uptodate)
+      update_logo
+      printf '\n  %s✓ Sudah versi terbaru%s  %s(%s)%s\n' "$GRN" "$R" "$D" "$new" "$R"
+      sleep 1.2
+      MAIN_NOTICE="✓ FINE-U sudah versi terbaru ($new)." ;;
+    *)
+      header
+      printf '  %s✖ Update gagal%s\n\n  %s\n\n' "$RED" "$R" "$msg"
+      pause ;;
+  esac
+}
+
 # Menu utama: FITUR dipilih dengan angka, TAMBAHAN dengan huruf (besar/kecil sama saja).
-# Input salah tidak menutup program: tampil pesan, lalu input diminta lagi. Hasil di $CHOICE (1 2 h s p x).
+# Input salah tidak menutup program: tampil pesan, lalu input diminta lagi. Hasil di $CHOICE (1 2 h s p u x).
 main_menu() {
   local notice="" ans shown
   while :; do
     header
+    [ -n "${MAIN_NOTICE:-}" ] && { printf '  %s%s%s\n\n' "$GRN" "$MAIN_NOTICE" "$R"; MAIN_NOTICE=""; }
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %sFITUR%s\n' "$B" "$R"
     printf '  %s[1]%s Mulai cari\n' "$B$CYN" "$R"
@@ -2052,14 +2151,15 @@ main_menu() {
     printf '  %s[H]%s Riwayat hasil\n' "$B$CYN" "$R"
     printf '  %s[S]%s Status sumber\n' "$B$CYN" "$R"
     printf '  %s[P]%s Setting\n' "$B$CYN" "$R"
+    printf '  %s[U]%s Update\n' "$B$CYN" "$R"
     printf '  %s[X]%s Keluar\n' "$B$CYN" "$R"
     printf '\n  Pilih menu: '
     read -r ans || exit 0
     ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}; ans=${ans,,}
-    case "$ans" in 1|2|h|s|p|x) CHOICE=$ans; return ;; esac
+    case "$ans" in 1|2|h|s|p|u|x) CHOICE=$ans; return ;; esac
     shown=${ans//[[:cntrl:]]/}; shown=${shown:0:20}
-    if [ -z "$shown" ]; then notice="Input kosong. Pilih 1 atau 2 untuk fitur, atau H / S / P / X untuk menu tambahan."
-    else notice="Input tidak dikenali: \"$shown\". Pilih 1 atau 2 untuk fitur, atau H / S / P / X untuk menu tambahan."; fi
+    if [ -z "$shown" ]; then notice="Input kosong. Pilih 1 atau 2 untuk fitur, atau H / S / P / U / X untuk menu tambahan."
+    else notice="Input tidak dikenali: \"$shown\". Pilih 1 atau 2 untuk fitur, atau H / S / P / U / X untuk menu tambahan."; fi
   done
 }
 
@@ -2417,6 +2517,7 @@ main() {
   check_deps
   trap cleanup EXIT
   trap 'exit 130' INT TERM
+  MAIN_NOTICE="${FINEU_RELOAD_NOTICE:-}"; unset FINEU_RELOAD_NOTICE
   while :; do
     main_menu
     case "$CHOICE" in
@@ -2425,6 +2526,7 @@ main() {
       h) history_session ;;
       s) status_screen ;;
       p) settings_screen ;;
+      u) update_session ;;
       x) clear_screen; printf '%sSampai jumpa.%s\n' "$D" "$R"; exit 0 ;;
     esac
   done
