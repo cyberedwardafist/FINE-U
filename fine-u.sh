@@ -3289,12 +3289,13 @@ history_session() {
   local ans notice=""
   while :; do
     header
-    printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat yang mau dilihat)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat atau menu tambahan)%s\n\n' "$B" "$R" "$D" "$R"
     [ -n "$HIST_NOTICE" ] && { printf '  %s%s%s\n\n' "${HIST_NOTICE_CLR:-$GRN}" "$HIST_NOTICE" "$R"; HIST_NOTICE=""; }
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
     printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
     printf '  %s[3]%s Cek IP  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$IP_DIR")" "$R"
+    printf '  %s[4]%s Live Tracking / Template Preview\n' "$B$CYN" "$R"
     printf '  %s[Bersihkan]%s\n' "$B$CYN" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
@@ -3304,8 +3305,9 @@ history_session() {
       1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
       2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
       3) history_browse "$IP_DIR" "RIWAYAT · CEK IP" '"\(.input)  · \(.ips | length) IP"' ip ;;
+      4) share_project_session ;;
       bersihkan) clean_menu || true ;;
-      *) notice="Pilihan tidak valid. Ketik 1, 2, 3, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
+      *) notice="Pilihan tidak valid. Ketik 1, 2, 3, 4, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
     esac
   done
 }
