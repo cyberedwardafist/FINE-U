@@ -2062,11 +2062,20 @@ update_worker() { # $1 = file status: baris 1 state, 2 pesan, 3 hash lama, 4 has
   if [ "$(git -C "$BASE" rev-parse HEAD)" = "$up" ] || git -C "$BASE" merge-base --is-ancestor "$up" HEAD 2>/dev/null; then
     printf 'uptodate\nSudah versi terbaru.\n%s\n%s\n' "$old" "$old" > "$out"; return
   fi
+  # Perubahan lokal pada file yang dilacak git (mis. script diganti manual) dicadangkan otomatis ke stash,
+  # supaya update tidak pernah bentrok dan tidak ada yang hilang (lihat dengan: git stash list).
+  if [ -n "$(git -C "$BASE" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    if git -C "$BASE" -c user.name=fine-u -c user.email=fine-u@localhost stash push -q -m "fine-u-cadangan-otomatis $(date +%F_%H-%M-%S)" >/dev/null 2>&1; then
+      backup=1
+    else
+      printf 'error\nAda perubahan lokal yang tidak bisa dicadangkan otomatis.\n%s\n\n' "$old" > "$out"; return
+    fi
+  fi
   if ! msg=$(git -C "$BASE" merge --ff-only "$up" 2>&1); then
-    printf 'error\nGagal menggabungkan pembaruan (ada perubahan lokal yang bentrok). Jalankan manual: git stash && git pull\n%s\n\n' "$old" > "$out"; return
+    printf 'error\nRiwayat git lokal berbeda dari GitHub (ada commit lokal yang belum di-push). Push dulu, atau reset ke GitHub.\n%s\n\n' "$old" > "$out"; return
   fi
   new=$(git -C "$BASE" rev-parse --short HEAD)
-  printf 'updated\nBerhasil diperbarui.\n%s\n%s\n' "$old" "$new" > "$out"
+  printf 'updated\nBerhasil diperbarui.\n%s\n%s\n%s\n' "$old" "$new" "$backup" > "$out"
 }
 
 # animasi: blok bergerak selama proses berjalan, lalu bar penuh
@@ -2107,7 +2116,7 @@ update_logo() {
 }
 
 update_session() {
-  local f st msg old new pid
+  local f st msg old new bk pid
   if [ ! -t 1 ]; then
     f=$(mktemp); update_worker "$f"; { read -r st; read -r msg; } < "$f"; rm -f "$f"; echo "$msg"; return
   fi
@@ -2115,13 +2124,15 @@ update_session() {
   update_worker "$f" & pid=$!
   update_loading "$pid"
   wait "$pid" 2>/dev/null
-  { read -r st; read -r msg; read -r old; read -r new; } < "$f"; rm -f "$f"
+  { read -r st; read -r msg; read -r old; read -r new; read -r bk; } < "$f"; rm -f "$f"
   case "$st" in
     updated)
       update_logo
       printf '\n  %s✓ Berhasil diperbarui%s  %s%s → %s%s\n' "$GRN" "$R" "$D" "$old" "$new" "$R"
-      sleep 1.2
+      [ "${bk:-0}" = 1 ] && printf '  %sPerubahan lokal lama dicadangkan otomatis (git stash list).%s\n' "$D" "$R"
+      sleep 1.6
       MAIN_NOTICE="✓ FINE-U sudah diperbarui ($old → $new). Sekarang memakai versi terbaru."
+      [ "${bk:-0}" = 1 ] && MAIN_NOTICE+=" Perubahan lokal lama ada di git stash."
       clear_screen
       FINEU_RELOAD_NOTICE="$MAIN_NOTICE" exec bash "$SELF" ;;
     uptodate)
