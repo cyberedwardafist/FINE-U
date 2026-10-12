@@ -2194,6 +2194,21 @@ view_file() {
   if [ -t 1 ] && command -v less >/dev/null; then less -fR "$1"; else cat "$1"; fi
 }
 
+# Layar hasil dengan satu pilihan [X]; $1 = fungsi penggambar layar, $2 = label
+menu_x() {
+  local draw=$1 label=$2 ans notice=""
+  while :; do
+    "$draw"
+    [ -n "$notice" ] && printf '  %s%s%s\n\n' "$RED" "$notice" "$R"
+    printf '  %s[X]%s %s\n' "$B$CYN" "$R" "$label"
+    printf '\n  Pilih: '
+    read -r ans || exit 0
+    ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}
+    [ "${ans,,}" = x ] && return
+    notice="Pilihan tidak valid. Ketik X untuk input kembali."
+  done
+}
+
 # Buka satu hasil riwayat dengan tampilan yang sama seperti saat pencarian berjalan
 history_open() { # $1=file .md  $2=jenis (umum|email) $3=judul riwayat
   local md=$1 kind=$2 title=${3// · / } js=${1%.md}.json
@@ -2202,11 +2217,11 @@ history_open() { # $1=file .md  $2=jenis (umum|email) $3=judul riwayat
   if [ "$kind" = umum ]; then
     REPORT=$(jq -c . "$js") || { view_file "$md"; return; }
     QUERY=$(jq -r '.query' <<< "$REPORT")
-    menu result_screen "Input kembali  (ke $title)"
+    menu_x result_screen "Input kembali  (ke $title)"
   else
     EREPORT=$(jq -c . "$js") || { view_file "$md"; return; }
     EMAIL=$(jq -r '.email' <<< "$EREPORT")
-    menu email_result_screen "Input kembali  (ke $title)"
+    menu_x email_result_screen "Input kembali  (ke $title)"
   fi
 }
 
