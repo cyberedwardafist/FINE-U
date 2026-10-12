@@ -202,7 +202,7 @@ TEMPLATES_DIR="$BASE/templates"
 WORK_DIR="$(mktemp -d /tmp/share-project.XXXXXX)"
 PORT=8787
 
-HIST_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/share-project/history"
+HIST_DIR="$BASE/saved_videos/history"
 mkdir -p "$HIST_DIR" 2>/dev/null || { HIST_DIR="$WORK_DIR/history"; mkdir -p "$HIST_DIR"; }
 
 SERVER_PID=""
@@ -463,6 +463,11 @@ PYEOF
 start_server() {
   local template_file=$1
   rm -rf "$WORK_DIR/site"; mkdir -p "$WORK_DIR/site"
+  
+  # --- TAMBAHKAN BARIS INI SUPAYA FOLDER OTOMATIS DIBUAT ---
+  mkdir -p "$BASE/saved_videos"
+  # --------------------------------------------------------
+
   cp "$template_file" "$WORK_DIR/site/index.html"
 
   CUR_ID="$(date +\%Y\%m\%d-\%H\%M\%S)-$$"
