@@ -3362,8 +3362,8 @@ status_screen() {
   local f lines rows; f=$(mktemp)
   { printf '  %sSTATUS SUMBER%s\n\n' "$B" "$R"; print_status; } > "$f"
   lines=$(wc -l < "$f"); rows=$(tput lines 2>/dev/null || echo 24)
-  if [ -t 1 ] && [ "$lines" -gt $((rows - 6)) ] && command -v less >/dev/null; then
-    LANG=C.UTF-8 less -f -R -P 'Status sumber  (panah atas/bawah untuk gulir, q untuk kembali)' "$f"
+  if [ -t 1 ] && [ "$lines" -gt $((rows - 6)) ] && command -v more >/dev/null; then
+    LANG=C.UTF-8 more -d "$f"
   else
     header; cat "$f"; printf '\n'; pause
   fi
