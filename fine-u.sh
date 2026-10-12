@@ -557,8 +557,7 @@ share_project_session() {
     printf '  [1] Photobooth\n'
     printf '  [2] With U\n'
     printf '  [3] Maps\n'
-    printf '  [K] Kembali ke menu utama\n\n'
-    printf 'Masukkan: '
+    printf 'Masukkan (kosongkan lalu Enter untuk kembali): '
     read -r tchoice
     case "$tchoice" in
       1) SELECTED_TEMPLATE="$TEMPLATES_DIR/photobooth.html"; SELECTED_NAME="Photobooth" ;;
