@@ -34,7 +34,9 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
 else
   B=""; D=""; RED=""; GRN=""; CYN=""; YEL=""; R=""
 fi
-
+# ----------------------------------------
+has() { command -v "$1" >/dev/null 2>&1; }
+now() { date +'%Y-%m-%d %H:%M:%S'; }
 # ---------- konfigurasi (.env) ----------
 # .env dibaca baris per baris sebagai data (TIDAK di-source), dan hanya
 # kunci yang dikenal yang dipakai. Isi .env tidak pernah dieksekusi.
