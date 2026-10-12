@@ -887,7 +887,8 @@ show_report() {
   found=$(jq -r '.found|length' <<< "$REPORT")
   failed=$(jq -r '.failed|length' <<< "$REPORT")
   secs=$(jq -r '(.tookMs/100|floor)/10' <<< "$REPORT")
-  printf '  %sDitemukan %s hasil di %s sumber%s  %s(mode %s, %s dtk)%s\n\n' "$GRN" "$total" "$found" "$R" "$D" "$SEARCH_MODE" "$secs" "$R"
+  local rmode; rmode=$(jq -r '.mode // empty' <<< "$REPORT"); rmode=${rmode:-$SEARCH_MODE}
+  printf '  %sDitemukan %s hasil di %s sumber%s  %s(mode %s, %s dtk)%s\n\n' "$GRN" "$total" "$found" "$R" "$D" "$rmode" "$secs" "$R"
 
   local width=$(( $(tput cols 2>/dev/null || echo 90) - 10 ))
   jq -r --argjson w "$width" --argjson max "$MAX_PER_SOURCE" \
@@ -2090,11 +2091,27 @@ search_session() {
 }
 
 view_file() {
-  if [ -t 1 ] && command -v less >/dev/null; then less -R "$1"; else cat "$1"; fi
+  if [ -t 1 ] && command -v less >/dev/null; then less -fR "$1"; else cat "$1"; fi
 }
 
-history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label
-  local base=$1 title=$2 expr=$3 dirs d last n q ans i notice=""
+# Buka satu hasil riwayat dengan tampilan yang sama seperti saat pencarian berjalan
+history_open() { # $1=file .md  $2=jenis (umum|email) $3=judul riwayat
+  local md=$1 kind=$2 title=${3// · / } js=${1%.md}.json
+  [ -r "$js" ] || { view_file "$md"; return; }
+  SAVED=${md/#$PWD\//}
+  if [ "$kind" = umum ]; then
+    REPORT=$(jq -c . "$js") || { view_file "$md"; return; }
+    QUERY=$(jq -r '.query' <<< "$REPORT")
+    menu result_screen "Input kembali  (ke $title)"
+  else
+    EREPORT=$(jq -c . "$js") || { view_file "$md"; return; }
+    EMAIL=$(jq -r '.email' <<< "$EREPORT")
+    menu email_result_screen "Input kembali  (ke $title)"
+  fi
+}
+
+history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label $4=jenis (umum|email)
+  local base=$1 title=$2 expr=$3 kind=${4:-umum} dirs d last n q ans i notice=""
   while :; do
     header
     printf '  %s%s%s\n\n' "$B" "$title" "$R"
@@ -2116,7 +2133,7 @@ history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label
     read -r ans || exit 0
     [ -z "$ans" ] && return
     if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#dirs[@]} )); then
-      view_file "$(find "${dirs[ans-1]}" -name '*.md' | sort | tail -n1)"
+      history_open "$(find "${dirs[ans-1]}" -name '*.md' | sort | tail -n1)" "$kind" "${title,,}"
     else
       if [ "${#dirs[@]}" -eq 1 ]; then notice="Input tidak valid. Ketik angka 1, atau kosongkan lalu Enter untuk kembali."
       else notice="Input tidak valid. Ketik angka 1 sampai ${#dirs[@]}, atau kosongkan lalu Enter untuk kembali."; fi
@@ -2138,8 +2155,8 @@ history_session() {
       "Cek email  ($(count_dirs "$EMAIL_DIR") tersimpan)" \
       "Kembali"
     case "$CHOICE" in
-      1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' ;;
-      2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' ;;
+      1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
+      2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
       3) return ;;
     esac
   done
