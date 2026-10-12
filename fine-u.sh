@@ -2062,18 +2062,19 @@ update_worker() { # $1 = file status: baris 1 state, 2 pesan, 3 hash lama, 4 has
   if [ "$(git -C "$BASE" rev-parse HEAD)" = "$up" ] || git -C "$BASE" merge-base --is-ancestor "$up" HEAD 2>/dev/null; then
     printf 'uptodate\nSudah versi terbaru.\n%s\n%s\n' "$old" "$old" > "$out"; return
   fi
-  # Perubahan lokal pada file yang dilacak git (mis. script diganti manual) dicadangkan otomatis ke stash,
-  # supaya update tidak pernah bentrok dan tidak ada yang hilang (lihat dengan: git stash list).
+  # Sama seperti update manual: git fetch origin -> git reset --hard origin/main -> chmod +x.
+  # Perubahan lokal pada file yang dilacak git dicadangkan dulu (git stash list); commit lokal yang
+  # berbeda dari GitHub disimpan di cabang cadangan, jadi tidak ada yang benar-benar hilang.
   if [ -n "$(git -C "$BASE" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-    if git -C "$BASE" -c user.name=fine-u -c user.email=fine-u@localhost stash push -q -m "fine-u-cadangan-otomatis $(date +%F_%H-%M-%S)" >/dev/null 2>&1; then
-      backup=1
-    else
-      printf 'error\nAda perubahan lokal yang tidak bisa dicadangkan otomatis.\n%s\n\n' "$old" > "$out"; return
-    fi
+    git -C "$BASE" -c user.name=fine-u -c user.email=fine-u@localhost stash push -q -m "fine-u-cadangan-otomatis $(date +%F_%H-%M-%S)" >/dev/null 2>&1 && backup=1
   fi
-  if ! msg=$(git -C "$BASE" merge --ff-only "$up" 2>&1); then
-    printf 'error\nRiwayat git lokal berbeda dari GitHub (ada commit lokal yang belum di-push). Push dulu, atau reset ke GitHub.\n%s\n\n' "$old" > "$out"; return
+  if ! git -C "$BASE" merge-base --is-ancestor HEAD "$up" 2>/dev/null; then
+    git -C "$BASE" branch -f "fine-u-cadangan-$(date +%F_%H-%M-%S)" HEAD >/dev/null 2>&1 && backup=1
   fi
+  if ! msg=$(git -C "$BASE" reset --hard "$up" 2>&1); then
+    printf 'error\nGagal menyamakan dengan GitHub: %s\n%s\n\n' "$(tr '\n' ' ' <<< "$msg" | cut -c1-160)" "$old" > "$out"; return
+  fi
+  chmod +x "$BASE"/*.sh 2>/dev/null
   new=$(git -C "$BASE" rev-parse --short HEAD)
   printf 'updated\nBerhasil diperbarui.\n%s\n%s\n%s\n' "$old" "$new" "$backup" > "$out"
 }
@@ -2129,10 +2130,10 @@ update_session() {
     updated)
       update_logo
       printf '\n  %s✓ Berhasil diperbarui%s  %s%s → %s%s\n' "$GRN" "$R" "$D" "$old" "$new" "$R"
-      [ "${bk:-0}" = 1 ] && printf '  %sPerubahan lokal lama dicadangkan otomatis (git stash list).%s\n' "$D" "$R"
+      [ "${bk:-0}" = 1 ] && printf '  %sPerubahan lokal lama dicadangkan otomatis (git stash list / cabang fine-u-cadangan-*).%s\n' "$D" "$R"
       sleep 1.6
       MAIN_NOTICE="✓ FINE-U sudah diperbarui ($old → $new). Sekarang memakai versi terbaru."
-      [ "${bk:-0}" = 1 ] && MAIN_NOTICE+=" Perubahan lokal lama ada di git stash."
+      [ "${bk:-0}" = 1 ] && MAIN_NOTICE+=" Perubahan lokal lama ada di cadangan git."
       clear_screen
       FINEU_RELOAD_NOTICE="$MAIN_NOTICE" exec bash "$SELF" ;;
     uptodate)
