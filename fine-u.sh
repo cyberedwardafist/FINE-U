@@ -3363,7 +3363,7 @@ status_screen() {
   { printf '  %sSTATUS SUMBER%s\n\n' "$B" "$R"; print_status; } > "$f"
   lines=$(wc -l < "$f"); rows=$(tput lines 2>/dev/null || echo 24)
   if [ -t 1 ] && [ "$lines" -gt $((rows - 6)) ] && command -v less >/dev/null; then
-    less -R -P 'Status sumber  (panah atas/bawah untuk gulir, q untuk kembali)' "$f"
+    less -f -R -P 'Status sumber  (panah atas/bawah untuk gulir, q untuk kembali)' "$f"
   else
     header; cat "$f"; printf '\n'; pause
   fi
