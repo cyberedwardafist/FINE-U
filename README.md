@@ -44,10 +44,11 @@ chmod +x fine-u.sh setup-searxng.sh
 
 1. **Mulai cari**: ketik nama / lokasi / barang, lihat hasil, lalu pilih cari lagi atau kembali.
 2. **Cari email**: masukkan satu alamat email, FINE-U memeriksanya (lihat bagian "Cari email").
+3. **Cek IP**: analisis pasif alamat IP, domain, atau file header email (lihat bagian "Cek IP").
 
 **TAMBAHAN** (pilih dengan huruf, huruf besar atau kecil sama saja):
 
-- **H**: Riwayat hasil. Pilih jenis riwayat (pencarian umum atau cek email), lalu nomor untuk membuka hasil terakhir.
+- **H**: Riwayat hasil. Pilih jenis riwayat (pencarian umum, cek email, atau cek IP), lalu nomor untuk membuka hasil terakhir.
 - **S**: Status sumber. Sumber umum, media sosial, pemeriksaan email, dan limit harian mana yang aktif.
 - **P**: Setting. Isi atau ubah API key, preferensi, dan **limit harian per API**. Disimpan ke `.env`.
 - **X**: Keluar.
@@ -248,3 +249,29 @@ hasil/<nama-yang-dicari>/<tanggal_jam>.json
 Program ini hanya mengambil data yang memang terbuka untuk umum. Jika dipakai untuk
 mencari informasi tentang orang, gunakan secara bertanggung jawab dan patuhi hukum
 yang berlaku, termasuk UU Pelindungan Data Pribadi.
+
+## Cek IP
+
+Menganalisis alamat IP yang **sudah Anda miliki**: dari log server Anda sendiri, header email yang Anda terima,
+atau hasil resolve sebuah domain. Masukan bisa berupa:
+
+- **Alamat IP** (IPv4 / IPv6), mis. `8.8.8.8`
+- **Domain atau URL**, mis. `contoh.com` (di-resolve ke IP, maksimum 5 IP)
+- **Path file header email** (`.eml` / `.txt`): FINE-U membaca jalur `Received`, `X-Originating-IP`, hasil SPF / DKIM /
+  DMARC, dan memberi peringatan jika `Reply-To` berbeda domain dari `From`
+
+Yang diperiksa per IP: pemilik blok IP (RDAP / WHOIS), reverse DNS, perkiraan lokasi dan ISP, jenis jaringan
+(hosting, seluler, CDN), node keluar Tor, dan reputasi lewat IPQualityScore bila `IPQS_API_KEY` diisi.
+
+Catatan: lokasi IP hanya perkiraan titik jaringan ISP, bukan alamat rumah atau identitas pemilik. Webmail besar
+(Gmail, Yahoo, Outlook) menyembunyikan IP asli pengirim. FINE-U sengaja **tidak** menyediakan IP logger / link
+pelacak untuk menjebak orang lain.
+
+```bash
+./fine-u.sh -i 8.8.8.8
+./fine-u.sh -i contoh.com
+./fine-u.sh -i ~/email-mencurigakan.eml
+```
+
+Hasil tersimpan di `hasil-ip/` (tidak ikut Git) dan bisa dibuka lagi lewat **H > Cek IP**.
+

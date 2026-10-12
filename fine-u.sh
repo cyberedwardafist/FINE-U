@@ -2026,6 +2026,447 @@ print_status() {
   else printf '  %sBelum ada .env. Buka menu Setting untuk mengisi API yang kamu punya.%s\n' "$D" "$R"; fi
 }
 
+# ======================================================================
+# ---------- CEK IP ----------
+# Analisis PASIF alamat IP yang sudah Anda punya: IP dari log server Anda sendiri, header email
+# yang Anda terima, atau hasil resolve sebuah domain. FINE-U tidak membuat link pelacak / IP logger
+# untuk menjebak orang lain: itu mengumpulkan IP seseorang tanpa sepengetahuannya.
+# ======================================================================
+IP_DIR="$BASE/hasil-ip"
+IP_MAX=5   # jumlah IP maksimum yang diperiksa dalam satu kali jalan
+
+ipv4_ok() {
+  local o
+  [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for o in 1 2 3 4; do (( 10#${BASH_REMATCH[o]} <= 255 )) || return 1; done
+}
+
+ipv6_expand() { # -> 8 grup heksadesimal 4 digit dipisah ":" ; gagal jika bukan IPv6 yang valid
+  local a=${1,,} head tail g n i
+  local -a h=() t=() out=()
+  [[ $a =~ ^[0-9a-f:]+$ ]] || return 1
+  [[ $a == *:::* ]] && return 1
+  if [[ $a == *::* ]]; then
+    [[ ${a#*::} == *::* ]] && return 1
+    head=${a%%::*}; tail=${a#*::}
+    [ -n "$head" ] && IFS=: read -ra h <<< "$head"
+    [ -n "$tail" ] && IFS=: read -ra t <<< "$tail"
+    n=$((8 - ${#h[@]} - ${#t[@]})); [ "$n" -lt 1 ] && return 1
+    out=("${h[@]}"); for ((i = 0; i < n; i++)); do out+=(0); done; out+=("${t[@]}")
+  else
+    IFS=: read -ra out <<< "$a"
+  fi
+  [ "${#out[@]}" -eq 8 ] || return 1
+  for g in "${out[@]}"; do [[ $g =~ ^[0-9a-f]{1,4}$ ]] || return 1; done
+  printf '%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x' $(for g in "${out[@]}"; do echo $((16#$g)); done)
+}
+
+ip_version() { # 4 atau 6 ; gagal jika bukan alamat IP
+  if ipv4_ok "$1"; then echo 4; elif ipv6_expand "$1" >/dev/null; then echo 6; else return 1; fi
+}
+
+ip_scope() { # publik | privat | loopback | link-local | CGNAT | multicast | dokumentasi | reserved
+  local ip=$1 a b c x
+  if ipv4_ok "$ip"; then
+    IFS=. read -r a b c _ <<< "$ip"; a=$((10#$a)); b=$((10#$b)); c=$((10#$c))
+    if   [ "$a" -eq 10 ] || { [ "$a" -eq 172 ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ]; } || { [ "$a" -eq 192 ] && [ "$b" -eq 168 ]; }; then echo privat
+    elif [ "$a" -eq 127 ]; then echo loopback
+    elif [ "$a" -eq 169 ] && [ "$b" -eq 254 ]; then echo link-local
+    elif [ "$a" -eq 100 ] && [ "$b" -ge 64 ] && [ "$b" -le 127 ]; then echo CGNAT
+    elif [ "$a" -ge 224 ] && [ "$a" -le 239 ]; then echo multicast
+    elif [ "$a" -eq 0 ] || [ "$a" -ge 240 ]; then echo reserved
+    elif { [ "$a" -eq 192 ] && [ "$b" -eq 0 ] && [ "$c" -eq 2 ]; } || { [ "$a" -eq 198 ] && [ "$b" -eq 51 ] && [ "$c" -eq 100 ]; } \
+         || { [ "$a" -eq 203 ] && [ "$b" -eq 0 ] && [ "$c" -eq 113 ]; }; then echo dokumentasi
+    else echo publik; fi
+  else
+    x=$(ipv6_expand "$ip") || return 1
+    case "$x" in
+      0000:0000:0000:0000:0000:0000:0000:0001) echo loopback ;;
+      0000:0000:0000:0000:0000:0000:0000:0000) echo reserved ;;
+      fe[89ab]*) echo link-local ;;
+      f[cd]*) echo privat ;;
+      ff*) echo multicast ;;
+      2001:0db8*) echo dokumentasi ;;
+      *) echo publik ;;
+    esac
+  fi
+}
+
+ip_ptr_name() { # nama DNS untuk pencarian PTR
+  local ip=$1 a b c d x
+  if ipv4_ok "$ip"; then
+    IFS=. read -r a b c d <<< "$ip"
+    printf '%d.%d.%d.%d.in-addr.arpa' $((10#$d)) $((10#$c)) $((10#$b)) $((10#$a))
+  else
+    x=$(ipv6_expand "$ip") || return 1; x=${x//:/}
+    printf '%sip6.arpa' "$(printf '%s' "$x" | rev | sed 's/./&./g')"
+  fi
+}
+
+net_kind() { # $1 = teks nama organisasi / ISP -> perkiraan jenis jaringan
+  local t=${1,,}
+  case "$t" in
+    "") echo "" ;;
+    *cloudflare*|*akamai*|*fastly*|*cloudfront*|*incapsula*|*imperva*) echo "CDN / proxy: IP milik penyedia CDN, bukan server asli pemilik situs" ;;
+    *amazon*|*aws*|*google*|*microsoft*|*azure*|*digitalocean*|*ovh*|*hetzner*|*linode*|*vultr*|*contabo*|*alibaba*|*tencent*|*oracle*|*hosting*|*datacenter*|*"data center"*|*cloud*|*server*|*vps*)
+      echo "pusat data / hosting: kemungkinan bukan pengguna rumahan" ;;
+    *telkomsel*|*indosat*|*axiata*|*smartfren*|*hutchison*|*mobile*|*cellular*|*wireless*|*lte*)
+      echo "jaringan seluler: satu IP sering dipakai banyak pelanggan sekaligus (CGNAT)" ;;
+    *) echo "kemungkinan ISP / jaringan akses" ;;
+  esac
+}
+
+tor_list() { # cache daftar node keluar Tor (diperbarui tiap 1 jam); cetak path
+  local f="$CACHE_DIR/tor-exit.txt"
+  mkdir -p "$CACHE_DIR"
+  if [ ! -s "$f" ] || [ -n "$(find "$f" -mmin +60 2>/dev/null)" ]; then
+    fetch "https://check.torproject.org/torbulkexitlist" 2>/dev/null | tr -d '\r' | grep -E '^[0-9a-fA-F.:]+$' > "$f.tmp"
+    if [ -s "$f.tmp" ]; then mv "$f.tmp" "$f"; else rm -f "$f.tmp"; fi
+  fi
+  [ -s "$f" ] && printf '%s' "$f"
+}
+
+# ---------- modul pemeriksaan IP (satu objek JSON per modul, sama seperti modul email) ----------
+ipm_rdap() {
+  local ip=$1 r code body info
+  local -a _L=() _K=() _F=()
+  r=$(http_get -L -H 'accept: application/rdap+json' "https://rdap.org/ip/$ip") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  if [ "$code" != 200 ]; then
+    addl "RDAP" "data registrasi tidak tersedia (kode $code)"
+    emit rdap "RDAP / WHOIS" info 0 "data registrasi tidak tersedia"; return 0
+  fi
+  info=$(jq -c 'def vc($k): (.vcardArray[1]? // []) | map(select(.[0] == $k)) | (.[0][3]? // "");
+    def ents: [.. | objects | select(has("roles") and has("vcardArray"))];
+    { name: (.name // ""), start: (.startAddress // ""), end: (.endAddress // ""),
+      cidr: ((.cidr0_cidrs // []) | map(((.v4prefix // .v6prefix // "") + "/" + ((.length // 0) | tostring))) | join(", ")),
+      country: (.country // ""),
+      org: (ents | map(select((.roles | index("registrant")) or (.roles | index("administrative")) or (.roles | index("technical"))) | vc("fn")) | map(select(. != "")) | (.[0] // "")),
+      abuse: (ents | map(select(.roles | index("abuse")) | vc("email")) | map(select(. != "")) | (.[0] // "")) }' <<< "$body") || return 1
+  local name org cidr start end country abuse
+  name=$(jq -r '.name' <<< "$info"); org=$(jq -r '.org' <<< "$info"); cidr=$(jq -r '.cidr' <<< "$info")
+  start=$(jq -r '.start' <<< "$info"); end=$(jq -r '.end' <<< "$info"); country=$(jq -r '.country' <<< "$info")
+  abuse=$(jq -r '.abuse' <<< "$info")
+  [ -n "$name" ] && addl "Nama jaringan" "$name"
+  [ -n "$org" ] && addl "Organisasi" "$org"
+  [ -n "$cidr" ] && addl "Blok IP (CIDR)" "$cidr"
+  [ -z "$cidr" ] && [ -n "$start" ] && addl "Rentang IP" "$start - $end"
+  [ -n "$country" ] && addl "Negara registrasi" "$country (negara pemegang blok IP, bukan lokasi pengguna)"
+  [ -n "$abuse" ] && addl "Kontak abuse" "$abuse"
+  addk "RDAP" "https://rdap.org/ip/$ip"
+  emit rdap "RDAP / WHOIS" info 0 "${org:-${name:-terdaftar}}"
+}
+
+ipm_rdns() {
+  local ip=$1 name j ptr
+  local -a _L=() _K=() _F=()
+  name=$(ip_ptr_name "$ip") || return 1
+  j=$(doh "$name" PTR) || return 1
+  ptr=$(jq -r '[.Answer[]? | select(.type == 12) | .data | sub("\\.$"; "")] | unique | join(", ")' <<< "$j") || return 1
+  if [ -n "$ptr" ]; then addl "Hostname (PTR)" "$ptr"; emit rdns "Reverse DNS" info 0 "$ptr"
+  else addl "Hostname (PTR)" "tidak ada catatan PTR"; emit rdns "Reverse DNS" info 0 "tidak ada catatan PTR"; fi
+}
+
+ipm_geo() {
+  local ip=$1 j src city region country cc lat lon tz asn org isp kind x sum loc=""
+  local -a _L=() _K=() _F=()
+  j=$(fetch "https://ipwho.is/$ip" 2>/dev/null) || j=""
+  if jq -e '.success == true' >/dev/null 2>&1 <<< "$j"; then
+    src="ipwho.is"
+    j=$(jq -c '{city:(.city // ""), region:(.region // ""), country:(.country // ""), cc:(.country_code // ""),
+      lat:((.latitude // "") | tostring), lon:((.longitude // "") | tostring), tz:(.timezone.id // ""),
+      asn:((.connection.asn // "") | tostring), org:(.connection.org // ""), isp:(.connection.isp // "")}' <<< "$j")
+  else
+    j=$(fetch "https://ipinfo.io/$ip/json") || return 1
+    jq -e 'has("ip") and ((.bogon // false) | not)' >/dev/null 2>&1 <<< "$j" || return 1
+    src="ipinfo.io"
+    j=$(jq -c '{city:(.city // ""), region:(.region // ""), country:(.country // ""), cc:(.country // ""),
+      lat:(((.loc // "") | split(",")[0]) // ""), lon:(((.loc // "") | split(",")[1]) // ""), tz:(.timezone // ""),
+      asn:((((.org // "") | capture("^AS(?<n>[0-9]+)")? | .n)) // ""), org:((.org // "") | sub("^AS[0-9]+ +"; "")), isp:""}' <<< "$j")
+  fi
+  city=$(jq -r '.city' <<< "$j"); region=$(jq -r '.region' <<< "$j"); country=$(jq -r '.country' <<< "$j")
+  cc=$(jq -r '.cc' <<< "$j"); lat=$(jq -r '.lat' <<< "$j"); lon=$(jq -r '.lon' <<< "$j"); tz=$(jq -r '.tz' <<< "$j")
+  asn=$(jq -r '.asn' <<< "$j"); org=$(jq -r '.org' <<< "$j"); isp=$(jq -r '.isp' <<< "$j")
+  for x in "$city" "$region" "$country"; do [ -n "$x" ] && loc+="${loc:+, }$x"; done
+  [ -n "$loc" ] && addl "Lokasi perkiraan" "$loc"
+  [ -n "$lat" ] && [ -n "$lon" ] && addl "Koordinat" "$lat, $lon  (titik jaringan ISP, bukan alamat rumah atau pemilik perangkat)"
+  [ -n "$asn" ] && addl "ASN" "AS${asn#AS}"
+  [ -n "$isp" ] && addl "ISP" "$isp"
+  [ -n "$org" ] && [ "$org" != "$isp" ] && addl "Organisasi" "$org"
+  [ -n "$tz" ] && addl "Zona waktu" "$tz"
+  kind=$(net_kind "$isp $org"); [ -n "$kind" ] && addl "Jenis jaringan (perkiraan)" "$kind"
+  addl "Sumber" "$src"
+  [ -n "$lat" ] && [ -n "$lon" ] && addk "Peta (perkiraan)" "https://www.openstreetmap.org/?mlat=$lat&mlon=$lon#map=9/$lat/$lon"
+  sum=${loc:-lokasi tidak diketahui}
+  if [ -n "$isp" ]; then sum+=" · $isp"; elif [ -n "$org" ]; then sum+=" · $org"; fi
+  emit geo "Geolokasi & ISP" info 0 "$sum"
+}
+
+ipm_tor() {
+  local ip=$1 f
+  local -a _L=() _K=() _F=()
+  if ! ipv4_ok "$ip"; then
+    addl "Status" "pemeriksaan node keluar Tor hanya untuk IPv4"
+    emit tor "Node keluar Tor" info 0 "hanya IPv4"; return 0
+  fi
+  f=$(tor_list) || return 1
+  if grep -qxF "$ip" "$f"; then
+    addl "Status" "terdaftar sebagai node keluar Tor"
+    emit tor "Node keluar Tor" warn 0 "ya: lalu lintas Tor, bukan satu pengguna tertentu"
+  else
+    addl "Status" "tidak ada di daftar node keluar Tor (torproject.org)"
+    emit tor "Node keluar Tor" ok 0 "bukan node keluar Tor"
+  fi
+}
+
+ipm_ipqs() {
+  local ip=$1 j fs state=ok
+  local -a _L=() _K=() _F=()
+  quota_take ipqs || return 1
+  j=$(fetch "https://www.ipqualityscore.com/api/json/ip/$IPQS_API_KEY/$ip") || return 1
+  jq -e '.success == true' >/dev/null 2>&1 <<< "$j" || return 1
+  fs=$(jq -r '.fraud_score // 0' <<< "$j")
+  addl "Skor fraud" "$fs/100"
+  addl "Proxy / VPN / Tor" "$(jq -r '"proxy " + (if .proxy then "ya" else "tidak" end) + ", VPN " + (if .vpn then "ya" else "tidak" end) + ", Tor " + (if .tor then "ya" else "tidak" end)' <<< "$j")"
+  addl "Bot" "$(jq -r 'if .bot_status then "ya" else "tidak" end' <<< "$j")"
+  addl "Penyalahgunaan terbaru" "$(jq -r 'if .recent_abuse then "ya" else "tidak" end' <<< "$j")"
+  [ "$(jq -r '.connection_type // empty' <<< "$j")" != "" ] && addl "Tipe koneksi" "$(jq -r '.connection_type' <<< "$j")"
+  if [ "$fs" -ge 85 ]; then state=bad; elif [ "$fs" -ge 50 ]; then state=warn; fi
+  jq -e '.recent_abuse == true' >/dev/null 2>&1 <<< "$j" && state=bad
+  emit ipqs "IPQualityScore" "$state" 0 "skor fraud $fs/100"
+}
+
+IPM_NAME=(); IPM_CAT=(); IPM_FN=(); IPM_REQ=()
+register_ip() { IPM_NAME+=("$1"); IPM_CAT+=("$2"); IPM_FN+=("$3"); IPM_REQ+=("${4:-}"); }
+register_ip "RDAP / WHOIS"    "Jaringan"  ipm_rdap
+register_ip "Reverse DNS"     "Jaringan"  ipm_rdns
+register_ip "Geolokasi & ISP" "Lokasi"    ipm_geo
+register_ip "Node keluar Tor" "Reputasi"  ipm_tor
+register_ip "IPQualityScore"  "Reputasi"  ipm_ipqs IPQS_API_KEY
+
+run_ip_scan() { # $1=ip $2=label animasi ; hasil JSON satu IP di $IPDATA
+  local ip=$1 label=$2 ver scope i n=0 id f name cat why
+  ver=$(ip_version "$ip"); scope=$(ip_scope "$ip")
+  if [ "$scope" != publik ]; then
+    IPDATA=$(jq -nc --arg ip "$ip" --argjson v "$ver" --arg s "$scope" '{ip:$ip, version:$v, scope:$s, modules:[], checked:0, failed:[]}'); return
+  fi
+  ETMP=$(mktemp -d)
+  for i in "${!IPM_NAME[@]}"; do
+    em_active "${IPM_REQ[i]}" || continue
+    n=$((n + 1)); id=$(printf '%03d' "$n")
+    printf '%s|%s' "${IPM_NAME[i]}" "${IPM_CAT[i]}" > "$ETMP/$id.meta"
+    (
+      set -o pipefail
+      QUOTA_MARK="$ETMP/$id.quota"
+      if "${IPM_FN[i]}" "$ip" > "$ETMP/$id.tmp" 2>/dev/null && jq -e 'type == "object"' "$ETMP/$id.tmp" >/dev/null 2>&1; then
+        mv "$ETMP/$id.tmp" "$ETMP/$id.json"
+      else : > "$ETMP/$id.fail"; fi
+      : > "$ETMP/$id.done"
+    ) &
+  done
+  spin_wait "$ETMP" "$n" "$label"
+  : > "$ETMP/all.ndjson"
+  for f in "$ETMP"/*.meta; do
+    [ -e "$f" ] || continue
+    id=$(basename "$f" .meta); IFS='|' read -r name cat < "$f"
+    if [ -f "$ETMP/$id.json" ]; then
+      jq -c --arg c "$cat" '. + {category:$c}' "$ETMP/$id.json" >> "$ETMP/all.ndjson"
+    else
+      why="tidak bisa dijangkau saat ini"
+      [ -s "$ETMP/$id.quota" ] && why="batas harian tercapai (atur di Setting > Limit harian)"
+      jq -nc --arg t "$name" --arg c "$cat" --arg w "$why" \
+        '{id:"gagal", title:$t, state:"fail", delta:0, summary:$w, lines:[], links:[], facts:[], category:$c}' >> "$ETMP/all.ndjson"
+    fi
+  done
+  IPDATA=$(jq -s --arg ip "$ip" --argjson v "$ver" --arg s "$scope" \
+    '{ip:$ip, version:$v, scope:$s, modules:., checked:length, failed:(map(select(.state == "fail") | .title))}' "$ETMP/all.ndjson")
+  rm -rf "$ETMP"; ETMP=""
+}
+
+# ---------- analisis header email ----------
+parse_mail_header() { # $1 = file -> JSON ringkasan; IP diurutkan dari hop terlama
+  local f=$1 h line ip from rp reply subj dt mid fdom rdom auth spf dkim dmarc hints hops
+  h=$(head -c 1048576 "$f" | tr -d '\r' | awk '/^$/ {exit} /^[ \t]/ { sub(/^[ \t]+/, " "); line = line $0; next } { if (line != "") print line; line = $0 } END { if (line != "") print line }')
+  gv() { grep -i -m1 "^$1:" <<< "$h" | sed -E 's/^[^:]*:[[:space:]]*//'; }
+  from=$(gv From); rp=$(gv Return-Path); reply=$(gv Reply-To); subj=$(gv Subject); dt=$(gv Date); mid=$(gv Message-ID)
+  dom() { grep -oE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+' <<< "$1" | head -1 | sed 's/.*@//' | tr 'A-Z' 'a-z'; }
+  fdom=$(dom "$from"); rdom=$(dom "$reply")
+  auth=$(grep -i -m1 '^Authentication-Results:' <<< "$h")
+  spf=$(grep -oiE 'spf=[a-z]+' <<< "$auth" | head -1 | cut -d= -f2 | tr 'A-Z' 'a-z')
+  [ -z "$spf" ] && spf=$(grep -i -m1 '^Received-SPF:' <<< "$h" | sed -E 's/^[^:]*:[[:space:]]*//' | awk '{print tolower($1)}')
+  dkim=$(grep -oiE 'dkim=[a-z]+' <<< "$auth" | head -1 | cut -d= -f2 | tr 'A-Z' 'a-z')
+  dmarc=$(grep -oiE 'dmarc=[a-z]+' <<< "$auth" | head -1 | cut -d= -f2 | tr 'A-Z' 'a-z')
+  hints=$(grep -iE '^(X-Originating-IP|X-Sender-IP|X-Real-IP):' <<< "$h" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
+  hops=$(grep -i '^Received:' <<< "$h" | tac | while IFS= read -r line; do
+    grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' <<< "$line"
+    grep -oiE '\[(IPv6:)?[0-9a-f:]{3,}\]' <<< "$line" | tr -d '[]' | sed 's/^[Ii][Pp][Vv]6://'
+  done)
+  local -a all=() pub=()
+  while IFS= read -r ip; do [ -n "$ip" ] && all+=("$ip"); done < <(printf '%s\n%s\n' "$hints" "$hops" | awk 'NF && !seen[$0]++')
+  for ip in "${all[@]}"; do
+    ip_version "$ip" >/dev/null 2>&1 && [ "$(ip_scope "$ip")" = publik ] && pub+=("$ip")
+  done
+  jq -nc --arg file "$(basename "$f")" --arg from "$from" --arg fdom "$fdom" --arg rp "$rp" --arg reply "$reply" --arg rdom "$rdom" \
+    --arg subj "$subj" --arg date "$dt" --arg mid "$mid" --arg spf "$spf" --arg dkim "$dkim" --arg dmarc "$dmarc" \
+    --argjson hints "$(printf '%s\n' "$hints" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson hops "$(printf '%s\n' "${all[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson pub "$(printf '%s\n' "${pub[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    '{file:$file, from:$from, fromDomain:$fdom, returnPath:$rp, replyTo:$reply, replyDomain:$rdom, subject:$subj, date:$date,
+      messageId:$mid, spf:$spf, dkim:$dkim, dmarc:$dmarc, hints:$hints, hops:$hops, publicIps:$pub}'
+}
+
+# ---------- baca masukan: IP, domain, atau file header email ----------
+ip_collect() { # $1 = masukan -> IP_LIST IP_KIND IP_INPUT IP_HEADER IP_DOMAIN IP_EXTRA ; gagal -> IP_ERR
+  local in=$1 f host t j x
+  IP_LIST=(); IP_KIND=""; IP_INPUT=""; IP_HEADER=null; IP_DOMAIN=""; IP_EXTRA=0; IP_ERR=""
+  in=${in%\"}; in=${in#\"}; in=${in%\'}; in=${in#\'}
+  f=${in/#\~/$HOME}
+  if [ -f "$f" ]; then
+    [ -r "$f" ] || { IP_ERR="File tidak bisa dibaca."; return 1; }
+    IP_KIND=header; IP_INPUT=$(basename "$f")
+    IP_HEADER=$(parse_mail_header "$f") || { IP_ERR="Header email tidak bisa dibaca."; return 1; }
+    mapfile -t IP_LIST < <(jq -r '.publicIps[]' <<< "$IP_HEADER")
+  elif ip_version "${in,,}" >/dev/null 2>&1; then
+    IP_KIND=ip; IP_INPUT=${in,,}; IP_LIST=("$IP_INPUT")
+  elif is_url_like "$in"; then
+    host=$(url_host "$in"); IP_KIND=domain; IP_INPUT=$host; IP_DOMAIN=$host
+    for t in "A:1" "AAAA:28"; do
+      j=$(doh "$host" "${t%%:*}" 2>/dev/null) || continue
+      while IFS= read -r x; do [ -n "$x" ] && ip_version "$x" >/dev/null 2>&1 && IP_LIST+=("$x"); done \
+        < <(jq -r --argjson ty "${t##*:}" '.Answer[]? | select(.type == $ty) | .data' <<< "$j" 2>/dev/null)
+    done
+    [ "${#IP_LIST[@]}" -eq 0 ] && { IP_ERR="Domain \"$host\" tidak punya alamat IP yang bisa di-resolve."; return 1; }
+  else
+    IP_ERR="Masukan tidak dikenali. Isi alamat IP (mis. 8.8.8.8), domain (mis. contoh.com), atau path file header email (.eml / .txt)."
+    return 1
+  fi
+  if [ "${#IP_LIST[@]}" -gt "$IP_MAX" ]; then IP_EXTRA=$(( ${#IP_LIST[@]} - IP_MAX )); IP_LIST=("${IP_LIST[@]:0:IP_MAX}"); fi
+  return 0
+}
+
+ip_slug() {
+  local s
+  s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9._-]\{1,\}/-/g' -e 's/^[-.]*//' | cut -c1-80)
+  printf '%s' "${s:-tanpa-nama}"
+}
+
+save_ip_report() { # mencetak path relatif file .md
+  local dir="$IP_DIR/$(ip_slug "$IP_KIND-$IP_INPUT")" ts
+  ts=$(date +%Y-%m-%d_%H-%M-%S)
+  mkdir -p "$dir"
+  printf '%s\n' "$IPREPORT" > "$dir/$ts.json"
+  jq -r '
+    "# Cek IP: \(.input)\n",
+    "\(.kind) · \(.date)\n",
+    (if .header != null then
+       "## Kepala email\n",
+       "- Dari: \(.header.from)", "- Return-Path: \(.header.returnPath)", "- Reply-To: \(.header.replyTo)",
+       "- SPF: \(.header.spf) · DKIM: \(.header.dkim) · DMARC: \(.header.dmarc)",
+       "- Jalur server (lama ke baru): \(.header.hops | join(" → "))", ""
+     else empty end),
+    (.ips[] | "## \(.ip) (\(.scope), IPv\(.version))\n",
+       (.modules[] | "### \(.title) · \(.summary)\n", (.lines[] | "- \(.k): \(.v)"), (.links[] | "- [\(.t)](\(.u))"), ""))
+  ' <<< "$IPREPORT" > "$dir/$ts.md"
+  printf '%s' "${dir/#$PWD\//}/$ts.md"
+}
+
+ip_do_check() { # setelah ip_collect berhasil; mengisi IPREPORT dan SAVED
+  local i n=${#IP_LIST[@]} items=()
+  for i in "${!IP_LIST[@]}"; do
+    run_ip_scan "${IP_LIST[i]}" "Memeriksa ${IP_LIST[i]} ($((i + 1))/$n)"
+    items+=("$IPDATA")
+  done
+  IPREPORT=$(jq -nc --arg in "$IP_INPUT" --arg kind "$IP_KIND" --arg d "$(date -Iseconds)" --arg dom "$IP_DOMAIN" \
+    --argjson h "$IP_HEADER" --argjson extra "$IP_EXTRA" --argjson ips "$(arr_json "${items[@]}")" \
+    '{type:"ip", input:$in, kind:$kind, date:$d, domain:$dom, header:$h, extra:$extra, ips:$ips}')
+  SAVED=$(save_ip_report)
+}
+
+render_ip_report() {
+  local width kind
+  width=$(( $(tput cols 2>/dev/null || echo 90) - 12 ))
+  kind=$(jq -r '.kind' <<< "$IPREPORT")
+  if [ "$kind" = domain ]; then
+    printf '  %sDomain%s %s%s%s  %s→ %s IP%s\n\n' "$D" "$R" "$B" "$(jq -r '.domain' <<< "$IPREPORT")" "$R" "$D" "$(jq -r '.ips | length' <<< "$IPREPORT")" "$R"
+  fi
+  if [ "$(jq -r '.header != null' <<< "$IPREPORT")" = true ]; then
+    jq -r --arg B "$B" --arg D "$D" --arg G "$GRN" --arg Y "$YEL" --arg RD "$RED" --arg R "$R" --argjson w "$width" '
+      def cut($n): gsub("\\s+";" ") | if length > $n then .[0:$n-1] + "…" else . end;
+      def st($v): if $v == "pass" then $G + "pass" + $R elif $v == "" then $D + "tidak ada" + $R else $RD + $v + $R end;
+      def row($k; $v): if $v == "" then empty else "  \($D)\($k + (" " * (14 - ($k | length))))\($R)\($v | cut($w - 16))" end;
+      .header as $h
+      | "  \($B)KEPALA EMAIL\($R)  \($D)(\($h.file))\($R)",
+        row("Dari"; $h.from), row("Return-Path"; $h.returnPath), row("Reply-To"; $h.replyTo), row("Tanggal"; $h.date),
+        "  \($D)Autentikasi  \($R) SPF \(st($h.spf))  ·  DKIM \(st($h.dkim))  ·  DMARC \(st($h.dmarc))",
+        (if $h.replyDomain != "" and $h.fromDomain != "" and $h.replyDomain != $h.fromDomain
+           then "  \($Y)▲ Reply-To berbeda domain dari From (\($h.fromDomain) vs \($h.replyDomain)): hati-hati, pola umum phishing.\($R)" else empty end),
+        (if ($h.spf != "" and $h.spf != "pass") or ($h.dmarc != "" and $h.dmarc != "pass")
+           then "  \($Y)▲ SPF / DMARC tidak lolos: pengirim mungkin dipalsukan.\($R)" else empty end),
+        row("Jalur server"; ($h.hops | join(" → "))),
+        (if ($h.publicIps | length) == 0
+           then "  \($D)Tidak ada IP publik di header. Webmail besar (Gmail, Yahoo, Outlook) menyembunyikan IP asli pengirim; yang tampak hanya server mereka.\($R)"
+           else "  \($D)Hop terlama biasanya paling dekat ke pengirim; hop terbaru milik server penerima.\($R)" end),
+        ""' <<< "$IPREPORT"
+  fi
+  jq -r --arg B "$B" --arg D "$D" --arg G "$GRN" --arg Y "$YEL" --arg RD "$RED" --arg C "$CYN" --arg R "$R" --argjson w "$width" '
+    def cut($n): gsub("\\s+";" ") | if length > $n then .[0:$n-1] + "…" else . end;
+    def icon: if .state == "ok" then $G + "●" + $R elif .state == "warn" then $Y + "▲" + $R
+              elif .state == "bad" then $RD + "✖" + $R elif .state == "fail" then $D + "✕" + $R
+              else $D + "○" + $R end;
+    .ips[] |
+      "  \($C)●\($R) \($B)\(.ip)\($R)  \($D)\(.scope) · IPv\(.version)\($R)",
+      (if .scope != "publik" then "    \($D)Bukan alamat publik: tidak ada data di internet yang bisa dicari.\($R)\n"
+       else
+         ( .modules | group_by(.category) | sort_by(. as $g | ["Jaringan","Lokasi","Reputasi"] | index($g[0].category))[]
+           | "    \($B)\(.[0].category | ascii_upcase)\($R)",
+             (.[] | "    \(icon) \($B)\(.title)\($R) \($D)· \(.summary | cut($w - 20))\($R)",
+                (.lines[] | "        \($D)\(.k):\($R) \(.v | cut($w - 12))"),
+                (.links[:3][] | "        \($C)\(.u)\($R)")),
+             "")
+       end)' <<< "$IPREPORT"
+  local ex nf; ex=$(jq -r '.extra' <<< "$IPREPORT")
+  [ "$ex" -gt 0 ] && printf '  %s%s IP lagi tidak diperiksa (batas %s IP per jalan).%s\n\n' "$D" "$ex" "$IP_MAX" "$R"
+  nf=$(jq -r '[.ips[].failed | length] | add // 0' <<< "$IPREPORT")
+  [ "$nf" -gt 0 ] && printf '  %s%s pemeriksaan tidak dijalankan (tidak terjangkau / batas harian).%s\n\n' "$D" "$nf" "$R"
+  printf '  %sLokasi IP hanya perkiraan titik jaringan ISP, bukan alamat rumah atau identitas pemilik. Gunakan dengan bertanggung jawab (UU PDP).%s\n\n' "$D" "$R"
+}
+
+ip_result_screen() {
+  header
+  printf '  Hasil Cek IP untuk: %s%s%s\n\n' "$B" "$IP_INPUT" "$R"
+  render_ip_report
+  [ -n "$SAVED" ] && printf '  %s✓ Tersimpan:%s %s%s%s\n\n' "$GRN" "$R" "$D" "$SAVED" "$R"
+}
+
+ip_session() {
+  local notice="" in
+  while :; do
+    header
+    printf '  %sCEK IP%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sAnalisis alamat IP, domain, atau header email yang sudah Anda miliki: pemilik blok IP, ISP,%s\n' "$D" "$R"
+    printf '  %sperkiraan lokasi, reverse DNS, node Tor, dan keaslian pengirim email.%s\n\n' "$D" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Masukkan IP / domain / path file header email: '
+    read -r in || exit 0
+    in=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "$in")
+    [ -z "$in" ] && return
+    header
+    printf '  Memeriksa: %s%s%s\n\n' "$B" "$in" "$R"
+    if ! ip_collect "$in"; then notice=$IP_ERR; continue; fi
+    ip_do_check
+    menu ip_result_screen "Cek IP lain" "Kembali"
+    [ "$CHOICE" -eq 2 ] && return
+  done
+}
+
+cli_ip() {
+  ip_collect "$1" || { echo "$IP_ERR" >&2; exit 1; }
+  printf 'Memeriksa: %s\n\n' "$IP_INPUT"
+  ip_do_check
+  render_ip_report
+  printf '  Tersimpan: %s\n' "$SAVED"
+}
+
 # ---------- layar & menu ----------
 pause() { printf '  %sTekan Enter untuk kembali...%s' "$D" "$R"; read -r _ || exit 0; }
 
@@ -2150,7 +2591,7 @@ update_session() {
 }
 
 # Menu utama: FITUR dipilih dengan angka, TAMBAHAN dengan huruf (besar/kecil sama saja).
-# Input salah tidak menutup program: tampil pesan, lalu input diminta lagi. Hasil di $CHOICE (1 2 h s p u x).
+# Input salah tidak menutup program: tampil pesan, lalu input diminta lagi. Hasil di $CHOICE (1 2 3 h s p u x).
 main_menu() {
   local notice="" ans shown
   while :; do
@@ -2159,7 +2600,8 @@ main_menu() {
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %sFITUR%s\n' "$B" "$R"
     printf '  %s[1]%s Mulai cari\n' "$B$CYN" "$R"
-    printf '  %s[2]%s Cari email\n\n' "$B$CYN" "$R"
+    printf '  %s[2]%s Cari email\n' "$B$CYN" "$R"
+    printf '  %s[3]%s Cek IP\n\n' "$B$CYN" "$R"
     printf '  %sTAMBAHAN%s\n' "$B" "$R"
     printf '  %s[H]%s Riwayat hasil\n' "$B$CYN" "$R"
     printf '  %s[S]%s Status sumber\n' "$B$CYN" "$R"
@@ -2169,10 +2611,10 @@ main_menu() {
     printf '\n  Pilih menu: '
     read -r ans || exit 0
     ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}; ans=${ans,,}
-    case "$ans" in 1|2|h|s|p|u|x) CHOICE=$ans; return ;; esac
+    case "$ans" in 1|2|3|h|s|p|u|x) CHOICE=$ans; return ;; esac
     shown=${ans//[[:cntrl:]]/}; shown=${shown:0:20}
-    if [ -z "$shown" ]; then notice="Input kosong. Pilih 1 atau 2 untuk fitur, atau H / S / P / U / X untuk menu tambahan."
-    else notice="Input tidak dikenali: \"$shown\". Pilih 1 atau 2 untuk fitur, atau H / S / P / U / X untuk menu tambahan."; fi
+    if [ -z "$shown" ]; then notice="Input kosong. Pilih 1, 2, atau 3 untuk fitur, atau H / S / P / U / X untuk menu tambahan."
+    else notice="Input tidak dikenali: \"$shown\". Pilih 1, 2, atau 3 untuk fitur, atau H / S / P / U / X untuk menu tambahan."; fi
   done
 }
 
@@ -2223,7 +2665,7 @@ menu_x() {
 }
 
 # Buka satu hasil riwayat dengan tampilan yang sama seperti saat pencarian berjalan
-history_open() { # $1=file .md  $2=jenis (umum|email) $3=judul riwayat
+history_open() { # $1=file .md  $2=jenis (umum|email|ip) $3=judul riwayat
   local md=$1 kind=$2 title=${3// · / } js=${1%.md}.json
   [ -r "$js" ] || { view_file "$md"; return; }
   SAVED=${md/#$PWD\//}
@@ -2231,6 +2673,10 @@ history_open() { # $1=file .md  $2=jenis (umum|email) $3=judul riwayat
     REPORT=$(jq -c . "$js") || { view_file "$md"; return; }
     QUERY=$(jq -r '.query' <<< "$REPORT")
     menu_x result_screen "Input kembali  (ke $title)"
+  elif [ "$kind" = ip ]; then
+    IPREPORT=$(jq -c . "$js") || { view_file "$md"; return; }
+    IP_INPUT=$(jq -r '.input' <<< "$IPREPORT")
+    menu_x ip_result_screen "Input kembali  (ke $title)"
   else
     EREPORT=$(jq -c . "$js") || { view_file "$md"; return; }
     EMAIL=$(jq -r '.email' <<< "$EREPORT")
@@ -2321,7 +2767,7 @@ clean_confirm() {
 clean_delete() { # menghapus semua folder di DEL_PATHS, lalu mengisi HIST_NOTICE
   local d n=0
   for d in "${DEL_PATHS[@]}"; do
-    case "$d" in "$BASE/hasil/"?*|"$EMAIL_DIR/"?*) rm -rf -- "$d" && n=$((n + 1)) ;; esac
+    case "$d" in "$BASE/hasil/"?*|"$EMAIL_DIR/"?*|"$IP_DIR/"?*) rm -rf -- "$d" && n=$((n + 1)) ;; esac
   done
   HIST_NOTICE="✓ $n data riwayat dihapus."; HIST_NOTICE_CLR=$GRN
 }
@@ -2391,6 +2837,8 @@ clean_all() { # semua riwayat (pencarian umum + cek email). Return 2 jika selesa
     < <(find "$BASE/hasil" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   while IFS= read -r d; do [ -n "$d" ] && { DEL_PATHS+=("$d"); DEL_TXT+=("[email]  $(hist_label "$d" '"\(.email)  · skor \(.score)/100"')"); }; done \
     < <(find "$EMAIL_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  while IFS= read -r d; do [ -n "$d" ] && { DEL_PATHS+=("$d"); DEL_TXT+=("[ip]     $(hist_label "$d" '"\(.input)  · \(.ips | length) IP"')"); }; done \
+    < <(find "$IP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   if [ "${#DEL_PATHS[@]}" -eq 0 ]; then
     header; printf '  %sBERSIHKAN · SEMUA%s\n\n  Belum ada data tersimpan.\n\n' "$B" "$R"; pause; return 0
   fi
@@ -2407,7 +2855,8 @@ clean_menu() { # setelah hapus / batal, kembali ke menu ini (Enter kosong = ke R
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
     printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
-    printf '  %s[3]%s Semua  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(( $(count_dirs "$BASE/hasil") + $(count_dirs "$EMAIL_DIR") ))" "$R"
+    printf '  %s[3]%s Cek IP  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$IP_DIR")" "$R"
+    printf '  %s[4]%s Semua  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(( $(count_dirs "$BASE/hasil") + $(count_dirs "$EMAIL_DIR") + $(count_dirs "$IP_DIR") ))" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
     ans=${ans//[[:space:]]/}
@@ -2416,8 +2865,9 @@ clean_menu() { # setelah hapus / batal, kembali ke menu ini (Enter kosong = ke R
       "") return 0 ;;
       1) clean_kind "$BASE/hasil" '.query' "pencarian umum" || rc=$? ;;
       2) clean_kind "$EMAIL_DIR" '"\(.email)  · skor \(.score)/100"' "cek email" || rc=$? ;;
-      3) clean_all || rc=$? ;;
-      *) notice="Pilihan tidak valid. Ketik 1, 2, atau 3, atau kosongkan lalu Enter untuk kembali."; continue ;;
+      3) clean_kind "$IP_DIR" '"\(.input)  · \(.ips | length) IP"' "cek IP" || rc=$? ;;
+      4) clean_all || rc=$? ;;
+      *) notice="Pilihan tidak valid. Ketik 1, 2, 3, atau 4, atau kosongkan lalu Enter untuk kembali."; continue ;;
     esac
   done
 }
@@ -2431,6 +2881,7 @@ history_session() {
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
     printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
+    printf '  %s[3]%s Cek IP  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$IP_DIR")" "$R"
     printf '  %s[Bersihkan]%s\n' "$B$CYN" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
@@ -2439,8 +2890,9 @@ history_session() {
       "") return ;;
       1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
       2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
+      3) history_browse "$IP_DIR" "RIWAYAT · CEK IP" '"\(.input)  · \(.ips | length) IP"' ip ;;
       bersihkan) clean_menu || true ;;
-      *) notice="Pilihan tidak valid. Ketik 1, 2, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
+      *) notice="Pilihan tidak valid. Ketik 1, 2, 3, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
     esac
   done
 }
@@ -2654,6 +3106,7 @@ Pemakaian:
   ./fine-u.sh                 mode interaktif (menu)
   ./fine-u.sh -q "nama"       satu kali cari tanpa menu; hasil disimpan di hasil/
   ./fine-u.sh -e "a@b.com"    satu kali cek email tanpa menu; hasil disimpan di hasil-email/
+  ./fine-u.sh -i "8.8.8.8"    satu kali cek IP / domain / file header email; hasil disimpan di hasil-ip/
   ./fine-u.sh --status        daftar sumber aktif / nonaktif
   ./fine-u.sh --help          bantuan ini
 
@@ -2690,6 +3143,11 @@ main() {
       [ -z "${1:-}" ] && { usage; exit 1; }
       check_deps; trap cleanup EXIT; trap 'exit 130' INT TERM
       cli_email "$1"; exit 0 ;;
+    -i|--ip)
+      shift
+      [ -z "${1:-}" ] && { usage; exit 1; }
+      check_deps; trap cleanup EXIT; trap 'exit 130' INT TERM
+      cli_ip "$1"; exit 0 ;;
     -q|--query)
       shift
       [ -z "${*:-}" ] && { usage; exit 1; }
@@ -2706,6 +3164,7 @@ main() {
     case "$CHOICE" in
       1) search_session ;;
       2) email_session ;;
+      3) ip_session ;;
       h) history_session ;;
       s) status_screen ;;
       p) settings_screen ;;

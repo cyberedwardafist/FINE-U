@@ -5,5 +5,6 @@
 # Data pribadi hasil pencarian & konfigurasi lokal
 hasil/
 hasil-email/
+hasil-ip/
 cache/
 searxng/
