@@ -2270,21 +2270,22 @@ history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label $4=jenis (umu
 
 count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
 
-history_type_screen() {
-  header
-  printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat yang mau dilihat)%s\n\n' "$B" "$R" "$D" "$R"
-}
-
 history_session() {
+  local ans notice=""
   while :; do
-    menu history_type_screen \
-      "Pencarian umum  ($(count_dirs "$BASE/hasil") tersimpan)" \
-      "Cek email  ($(count_dirs "$EMAIL_DIR") tersimpan)" \
-      "Kembali"
-    case "$CHOICE" in
+    header
+    printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat yang mau dilihat)%s\n\n' "$B" "$R" "$D" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
+    printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
+    printf '\n  Pilih nomor (kosongkan untuk kembali): '
+    read -r ans || exit 0
+    ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}
+    case "$ans" in
+      "") return ;;
       1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
       2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
-      3) return ;;
+      *) notice="Pilihan tidak valid. Ketik 1 atau 2, atau kosongkan lalu Enter untuk kembali." ;;
     esac
   done
 }
