@@ -2270,22 +2270,176 @@ history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label $4=jenis (umu
 
 count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
 
+# ---------- BERSIHKAN RIWAYAT ----------
+HIST_NOTICE=""; HIST_NOTICE_CLR=""
+
+hist_label() { # $1=folder $2=ekspresi jq -> "label  (n pencarian, terakhir ...)"
+  local d=$1 expr=$2 last n q=""
+  last=$(find "$d" -name '*.md' | sort | tail -n1)
+  n=$(find "$d" -name '*.md' | wc -l)
+  [ -n "$last" ] && q=$(jq -r "$expr // empty" "${last%.md}.json" 2>/dev/null)
+  q=${q:-$(basename "$d")}
+  if [ -n "$last" ]; then printf '%s  (%d pencarian, terakhir %s)' "$q" "$n" "$(basename "$last" .md)"
+  else printf '%s  (kosong)' "$q"; fi
+}
+
+# kode acak 6 karakter: huruf besar, huruf kecil, angka, dan karakter spesial (mis. Aq2$F2)
+gen_code() {
+  local up=ABCDEFGHJKLMNPQRSTUVWXYZ lo=abcdefghijkmnpqrstuvwxyz di=23456789 sp='!@#$%&*?+=' all c i
+  all=$up$lo$di$sp
+  c=${up:RANDOM%${#up}:1}${lo:RANDOM%${#lo}:1}${di:RANDOM%${#di}:1}${sp:RANDOM%${#sp}:1}
+  for ((i = 0; i < 2; i++)); do c+=${all:RANDOM%${#all}:1}; done
+  fold -w1 <<< "$c" | shuf | tr -d '\n'
+}
+
+# Layar konfirmasi. Memakai KEEP_TXT (dijaga, boleh kosong), DEL_TXT (dihapus). Return 0 = lanjut, 1 = batal.
+clean_confirm() {
+  local code ans notice="" t
+  code=$(gen_code)
+  while :; do
+    header
+    printf '  %sKONFIRMASI PENGHAPUSAN%s\n\n' "$B" "$R"
+    if [ "${#KEEP_TXT[@]}" -gt 0 ]; then
+      printf '  %sDATA YANG DIJAGA (%d)%s\n' "$B$GRN" "${#KEEP_TXT[@]}" "$R"
+      for t in "${KEEP_TXT[@]}"; do printf '    %s✔%s %s\n' "$GRN" "$R" "$t"; done
+      printf '\n'
+    fi
+    printf '  %sDATA YANG AKAN DIHAPUS (%d)%s\n' "$B$RED" "${#DEL_TXT[@]}" "$R"
+    for t in "${DEL_TXT[@]}"; do printf '    %s✖%s %s\n' "$RED" "$R" "$t"; done
+    printf '\n  %sData yang dihapus tidak bisa dikembalikan.%s\n\n' "$YEL" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Ketik kode ini untuk melanjutkan: %s%s%s\n' "$B$YEL" "$code" "$R"
+    printf '  Ketik %sX%s untuk membatalkan.\n\n  Kode: ' "$B$CYN" "$R"
+    IFS= read -r ans || exit 0
+    [ "$ans" = "$code" ] && return 0
+    [ "${ans,,}" = x ] && return 1
+    notice="Kode tidak cocok. Ketik persis seperti kode di atas (huruf besar/kecil berpengaruh), atau X untuk batal."
+  done
+}
+
+clean_delete() { # menghapus semua folder di DEL_PATHS, lalu mengisi HIST_NOTICE
+  local d n=0
+  for d in "${DEL_PATHS[@]}"; do
+    case "$d" in "$BASE/hasil/"?*|"$EMAIL_DIR/"?*) rm -rf -- "$d" && n=$((n + 1)) ;; esac
+  done
+  HIST_NOTICE="✓ $n data riwayat dihapus."; HIST_NOTICE_CLR=$GRN
+}
+
+# Satu jenis riwayat. Return 2 jika selesai (dihapus / dibatalkan di konfirmasi), 0 jika kembali.
+clean_kind() { # $1=folder $2=ekspresi jq $3=nama jenis
+  local base=$1 expr=$2 name=$3 dirs=() lbl=() d i n ans mode notice="" tok
+  mapfile -t dirs < <(find "$base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  n=${#dirs[@]}
+  if [ "$n" -eq 0 ]; then
+    header; printf '  %sBERSIHKAN · %s%s\n\n  Belum ada data tersimpan untuk jenis ini.\n\n' "$B" "${name^^}" "$R"; pause; return 0
+  fi
+  for d in "${dirs[@]}"; do lbl+=("$(hist_label "$d" "$expr")"); done
+
+  while :; do   # --- pilih cara menghapus
+    header
+    printf '  %sBERSIHKAN · %s%s  %s(%d data)%s\n\n' "$B" "${name^^}" "$R" "$D" "$n" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Bagaimana cara menghapusnya?\n\n'
+    printf '  %s[1]%s Pilih data  %s(data yang kamu pilih akan DIHAPUS)%s\n' "$B$CYN" "$R" "$D" "$R"
+    printf '  %s[2]%s Jaga data   %s(data yang kamu pilih DIJAGA, sisanya dihapus)%s\n' "$B$CYN" "$R" "$D" "$R"
+    printf '\n  Pilih nomor (kosongkan untuk kembali): '
+    read -r mode || exit 0
+    mode=${mode//[[:space:]]/}
+    case "$mode" in
+      "") return 0 ;;
+      1|2) ;;
+      *) notice="Pilihan tidak valid. Ketik 1 atau 2, atau kosongkan lalu Enter untuk kembali."; continue ;;
+    esac
+
+    while :; do   # --- pilih nomor data
+      header
+      printf '  %sBERSIHKAN · %s%s  %s(%s)%s\n\n' "$B" "${name^^}" "$R" "$D" "$([ "$mode" = 1 ] && echo "mode: pilih data yang dihapus" || echo "mode: jaga data yang dipilih")" "$R"
+      [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+      for ((i = 0; i < n; i++)); do printf '  %s[%d]%s %s\n' "$B$CYN" $((i + 1)) "$R" "${lbl[i]}"; done
+      printf '\n  Nomor data yang %s (bisa lebih dari satu, mis. 1,4,17; kosongkan untuk kembali): ' \
+        "$([ "$mode" = 1 ] && echo "ingin DIHAPUS" || echo "ingin DIJAGA")"
+      read -r ans || exit 0
+      ans=${ans//,/ }
+      [ -z "${ans//[[:space:]]/}" ] && break
+      declare -A sel=(); local bad="" toks=()
+      read -ra toks <<< "$ans"
+      for tok in "${toks[@]}"; do
+        if [[ $tok =~ ^[0-9]+$ ]] && (( 10#$tok >= 1 && 10#$tok <= n )); then sel[$((10#$tok))]=1; else bad=$tok; break; fi
+      done
+      if [ -n "$bad" ]; then
+        notice="Nomor tidak valid: \"${bad:0:20}\". Gunakan angka 1 sampai $n, dipisah koma (mis. 1,4,17)."; unset sel; continue
+      fi
+      DEL_PATHS=(); DEL_TXT=(); KEEP_TXT=()
+      for ((i = 0; i < n; i++)); do
+        if [ -n "${sel[$((i + 1))]:-}" ]; then
+          if [ "$mode" = 1 ]; then DEL_PATHS+=("${dirs[i]}"); DEL_TXT+=("${lbl[i]}"); else KEEP_TXT+=("${lbl[i]}"); fi
+        elif [ "$mode" = 2 ]; then DEL_PATHS+=("${dirs[i]}"); DEL_TXT+=("${lbl[i]}"); fi
+      done
+      unset sel
+      if [ "${#DEL_PATHS[@]}" -eq 0 ]; then notice="Semua data dipilih untuk dijaga, jadi tidak ada yang dihapus."; continue; fi
+      if clean_confirm; then clean_delete; else HIST_NOTICE="Dibatalkan. Tidak ada data yang dihapus."; HIST_NOTICE_CLR=$YEL; fi
+      return 2
+    done
+  done
+}
+
+clean_all() { # semua riwayat (pencarian umum + cek email). Return 2 jika selesai, 0 jika tidak ada data.
+  local d
+  DEL_PATHS=(); DEL_TXT=(); KEEP_TXT=()
+  while IFS= read -r d; do [ -n "$d" ] && { DEL_PATHS+=("$d"); DEL_TXT+=("[cari]   $(hist_label "$d" '.query')"); }; done \
+    < <(find "$BASE/hasil" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  while IFS= read -r d; do [ -n "$d" ] && { DEL_PATHS+=("$d"); DEL_TXT+=("[email]  $(hist_label "$d" '"\(.email)  · skor \(.score)/100"')"); }; done \
+    < <(find "$EMAIL_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  if [ "${#DEL_PATHS[@]}" -eq 0 ]; then
+    header; printf '  %sBERSIHKAN · SEMUA%s\n\n  Belum ada data tersimpan.\n\n' "$B" "$R"; pause; return 0
+  fi
+  if clean_confirm; then clean_delete; else HIST_NOTICE="Dibatalkan. Tidak ada data yang dihapus."; HIST_NOTICE_CLR=$YEL; fi
+  return 2
+}
+
+clean_menu() { # return 2 jika ada tindakan selesai
+  local ans notice="" rc
+  while :; do
+    header
+    printf '  %sBERSIHKAN RIWAYAT%s  %s(pilih jenis yang mau dibersihkan)%s\n\n' "$B" "$R" "$D" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  %s[1]%s Cari  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
+    printf '  %s[2]%s Email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
+    printf '  %s[3]%s Semua  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(( $(count_dirs "$BASE/hasil") + $(count_dirs "$EMAIL_DIR") ))" "$R"
+    printf '\n  Pilih nomor (kosongkan untuk kembali): '
+    read -r ans || exit 0
+    ans=${ans//[[:space:]]/}
+    rc=0
+    case "$ans" in
+      "") return 0 ;;
+      1) clean_kind "$BASE/hasil" '.query' "pencarian umum" || rc=$? ;;
+      2) clean_kind "$EMAIL_DIR" '"\(.email)  · skor \(.score)/100"' "cek email" || rc=$? ;;
+      3) clean_all || rc=$? ;;
+      *) notice="Pilihan tidak valid. Ketik 1, 2, atau 3, atau kosongkan lalu Enter untuk kembali."; continue ;;
+    esac
+    [ "$rc" -eq 2 ] && return 2
+  done
+}
+
 history_session() {
   local ans notice=""
   while :; do
     header
     printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat yang mau dilihat)%s\n\n' "$B" "$R" "$D" "$R"
+    [ -n "$HIST_NOTICE" ] && { printf '  %s%s%s\n\n' "${HIST_NOTICE_CLR:-$GRN}" "$HIST_NOTICE" "$R"; HIST_NOTICE=""; }
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
     printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
+    printf '  %s[Bersihkan]%s\n' "$B$CYN" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
     ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}
-    case "$ans" in
+    case "${ans,,}" in
       "") return ;;
       1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
       2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
-      *) notice="Pilihan tidak valid. Ketik 1 atau 2, atau kosongkan lalu Enter untuk kembali." ;;
+      bersihkan) clean_menu || true ;;
+      *) notice="Pilihan tidak valid. Ketik 1, 2, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
     esac
   done
 }
