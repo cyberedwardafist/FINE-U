@@ -9,13 +9,19 @@ lalu hanya menampilkan sumber yang menemukan hasil, lengkap dengan link-nya.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y cloudflared
 sudo snap install ngrok
 sudo apt update && sudo apt install -y pipx
 pipx ensurepath
 pipx install seleniumbase
 sudo apt update && sudo apt install -y seclists dirsearch
 sudo apt install -y curl jq gawk   # hanya jika belum ada
+```
+Untuk **cloudflared** Resmi
+
+```bash
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+rm cloudflared-linux-amd64.deb
 ```
 
 Tambahan **opsional** untuk menu Cari email (tanpa ini, pemeriksaan lain tetap jalan):
