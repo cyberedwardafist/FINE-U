@@ -190,7 +190,6 @@ header() {
   local l
   for l in "${LOGO[@]}"; do printf '  %s%s%s\n' "$B$CYN" "$l" "$R"; done
   printf '  %sPencarian informasi publik di internet & Pengayaan OSINT%s\n' "$D" "$R"
-  printf '  %sGitHub : cyberedwardafist%s\n' "$D" "$R"
   printf '  %s────────────────────────────────────────────%s\n\n' "$D" "$R"
 }
 
@@ -2438,11 +2437,52 @@ ip_result_screen() {
   [ -n "$SAVED" ] && printf '  %s✓ Tersimpan:%s %s%s%s\n\n' "$GRN" "$R" "$D" "$SAVED" "$R"
 }
 
-ip_session() {
+# Submenu Cek IP: [1] Dapatkan IP (belum tersedia), [2] Cari IP (analisis pasif yang sudah ada).
+ip_menu() {
+  local notice="" ans shown
+  while :; do
+    header
+    printf '  %sCEK IP%s\n\n' "$B" "$R"
+    printf '  %s[1]%s Dapatkan IP\n' "$B$CYN" "$R"
+    printf '  %s[2]%s Cari IP\n\n' "$B$CYN" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Pilih menu %s(kosongkan lalu Enter untuk kembali)%s: ' "$D" "$R"
+    read -r ans || exit 0
+    ans=${ans#"${ans%%[![:space:]]*}"}; ans=${ans%"${ans##*[![:space:]]}"}
+    case "$ans" in
+      1) ip_get_session ;;
+      2) ip_search_session ;;
+      "") return ;;
+      *)
+        shown=${ans//[[:cntrl:]]/}; shown=${shown:0:20}
+        notice="Input tidak dikenali: \"$shown\". Pilih 1 atau 2, atau kosongkan untuk kembali." ;;
+    esac
+  done
+}
+
+# [1] Dapatkan IP: belum ada isi. Input apa pun saat ini tidak melakukan apa-apa;
+# kosongkan lalu Enter untuk kembali ke menu Cek IP.
+ip_get_session() {
   local notice="" in
   while :; do
     header
-    printf '  %sCEK IP%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sDAPATKAN IP%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sBelum tersedia.%s\n\n' "$D" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Masukkan: '
+    read -r in || exit 0
+    in=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "$in")
+    [ -z "$in" ] && return
+    notice="Fitur ini belum tersedia."
+  done
+}
+
+# [2] Cari IP: analisis pasif IP / domain / header email (fitur Cek IP yang sudah ada).
+ip_search_session() {
+  local notice="" in
+  while :; do
+    header
+    printf '  %sCARI IP%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
     printf '  %sAnalisis alamat IP, domain, atau header email yang sudah Anda miliki: pemilik blok IP, ISP,%s\n' "$D" "$R"
     printf '  %sperkiraan lokasi, reverse DNS, node Tor, dan keaslian pengirim email.%s\n\n' "$D" "$R"
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
@@ -3164,7 +3204,7 @@ main() {
     case "$CHOICE" in
       1) search_session ;;
       2) email_session ;;
-      3) ip_session ;;
+      3) ip_menu ;;
       h) history_session ;;
       s) status_screen ;;
       p) settings_screen ;;
