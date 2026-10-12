@@ -275,7 +275,7 @@ print_log_line() {
 
 write_server_py() {
   cat >"$WORK_DIR/server.py" <<'PYEOF'
-import http.server, json, re, sys, threading, uuid, os, time
+import http.server, json, re, sys, threading, uuid, os, time, cgi
 from datetime import datetime
 
 port, logfile = int(sys.argv[1]), sys.argv[2]
@@ -429,17 +429,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 content_type = self.headers.get("Content-Type", "")
                 if "multipart/form-data" in content_type:
-                    length = int(self.headers.get("Content-Length", 0))
-                    body_data = self.rfile.read(length)
-                    header_end = body_data.find(b'\r\n\r\n')
-                    if header_end != -1:
-                        video_bytes = body_data[header_end + 4:-2]
-                        if not os.path.exists(ip_folder): os.makedirs(ip_folder)
-                        filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
-                        with open(os.path.join(ip_folder, filename), "wb") as f:
-                            f.write(video_bytes)
-                self.send_response(200); self.end_headers(); self.wfile.write(b"Saved")
-            except Exception: self.send_error(500)
+                    form = cgi.FieldStorage(
+                        fp=self.rfile,
+                        headers=self.headers,
+                        environ={
+                            'REQUEST_METHOD': 'POST',
+                            'CONTENT_TYPE': content_type,
+                        }
+                    )
+                    if 'video' in form:
+                        fileitem = form['video']
+                        if fileitem.file:
+                            if not os.path.exists(ip_folder): 
+                                os.makedirs(ip_folder)
+                            filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
+                            filepath = os.path.join(ip_folder, filename)
+                            with open(filepath, 'wb') as f:
+                                f.write(fileitem.file.read())
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Saved")
+            except Exception as e:
+                self.send_error(500, str(e))
             return
 
         if parsed_path != "/__beacon": return self.send_error(404)
