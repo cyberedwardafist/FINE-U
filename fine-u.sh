@@ -190,6 +190,7 @@ header() {
   local l
   for l in "${LOGO[@]}"; do printf '  %s%s%s\n' "$B$CYN" "$l" "$R"; done
   printf '  %sPencarian informasi publik di internet & Pengayaan OSINT%s\n' "$D" "$R"
+  printf '  %sGitHub : cyberedwardafist%s\n' "$D" "$R"
   printf '  %s────────────────────────────────────────────%s\n\n' "$D" "$R"
 }
 
