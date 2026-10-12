@@ -4,14 +4,28 @@
 #
 #   ./fine-u.sh                  mode interaktif (menu)
 #   ./fine-u.sh -q "nama"        satu kali cari tanpa menu, hasil disimpan
+#   ./fine-u.sh -e "a@b.com"     satu kali cek email tanpa menu, hasil disimpan
 #   ./fine-u.sh --status         daftar sumber aktif / nonaktif
 #   ./fine-u.sh --help
 
 umask 077   # file .env dan folder hasil/ hanya bisa dibaca pemilik
 
 BASE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-VERSION="1.3.0"
+VERSION="1.4.1"
 UA="FINE-U/$VERSION (personal research tool)"
+
+# ---------- daftar user-agent acak untuk rotasi (anti-blocking sederhana) ----------
+# Matikan dengan UA_ROTATE=0 (di .env atau di lingkungan) untuk memakai UA FINE-U di atas.
+UA_LIST=(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15"
+  "Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0"
+)
+get_random_ua() {
+  if [ "${UA_ROTATE:-1}" = 0 ]; then printf '%s' "$UA"; return; fi
+  local idx=$((RANDOM % ${#UA_LIST[@]}))
+  printf '%s' "${UA_LIST[idx]}"
+}
 
 # ---------- warna ----------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -27,7 +41,9 @@ fi
 ENV_KEYS=(SEARXNG_URL TAVILY_API_KEY BRAVE_API_KEY GOOGLE_CSE_KEY GOOGLE_CSE_CX
           YOUTUBE_API_KEY GITHUB_TOKEN SEARCH_MODE EXACT_MATCH MAX_PER_SOURCE
           SEARXNG_LANG SEARXNG_PAGES SOCIAL_SEARCH SOCIAL_BACKEND
-          SOCIAL_GROUP_SIZE CURL_TIMEOUT)
+          SOCIAL_GROUP_SIZE CURL_TIMEOUT
+          HIBP_API_KEY HUNTER_API_KEY ABSTRACT_API_KEY ZEROBOUNCE_API_KEY IPQS_API_KEY
+          EMAILREP_API_KEY DEHASHED_API_KEY SEON_API_KEY EMAIL_WEB_SCAN UA_ROTATE)
 
 is_env_key() { local k; for k in "${ENV_KEYS[@]}"; do [ "$k" = "$1" ] && return 0; done; return 1; }
 
@@ -53,6 +69,7 @@ apply_defaults() {
   SOCIAL_SEARCH="${SOCIAL_SEARCH:-1}"
   SOCIAL_BACKEND="${SOCIAL_BACKEND:-auto}"
   SOCIAL_GROUP_SIZE="${SOCIAL_GROUP_SIZE:-6}"
+  EMAIL_WEB_SCAN="${EMAIL_WEB_SCAN:-1}"
   if [ -z "${SEARCH_MODE:-}" ]; then   # kompatibel dengan EXACT_MATCH versi lama
     case "${EXACT_MATCH:-}" in 1) SEARCH_MODE=akurat ;; 0) SEARCH_MODE=luas ;; *) SEARCH_MODE=seimbang ;; esac
   fi
@@ -88,7 +105,7 @@ header() {
   printf '  %s%s%s\n' "$B$CYN" "██╔══╝  ██║██║╚██╗██║██╔══╝  ╚════╝██║   ██║" "$R"
   printf '  %s%s%s\n' "$B$CYN" "██║     ██║██║ ╚████║███████╗      ╚██████╔╝" "$R"
   printf '  %s%s%s\n' "$B$CYN" "╚═╝     ╚═╝╚═╝  ╚═══╝╚══════╝       ╚═════╝ " "$R"
-  printf '  %sPencarian informasi publik di internet%s\n' "$D" "$R"
+  printf '  %sPencarian informasi publik di internet & Pengayaan OSINT%s\n' "$D" "$R"
   printf '  %s────────────────────────────────────────────%s\n\n' "$D" "$R"
 }
 
@@ -96,7 +113,8 @@ header() {
 urlenc() { jq -rn --arg s "$1" '$s|@uri'; }
 urldec() { local s=${1//+/ }; printf '%b' "${s//%/\\x}"; }
 
-fetch() { curl -fsS --compressed --max-time "$CURL_TIMEOUT" --retry 1 -A "$UA" "$@"; }
+# Memakai User-Agent acak per permintaan (lihat UA_LIST di atas).
+fetch() { curl -fsS --compressed --max-time "$CURL_TIMEOUT" --retry 1 -A "$(get_random_ua)" "$@"; }
 
 # Dekode entitas HTML dasar di jq
 JQ_DEC='def dec: gsub("&quot;";"\"")|gsub("&#39;";"\u0027")|gsub("&#x27;";"\u0027")|gsub("&amp;";"&")|gsub("&lt;";"<")|gsub("&gt;";">");'
@@ -819,6 +837,925 @@ save_report() { # mencetak path relatif file .md
   printf '%s' "${dir/#$PWD\//}/$ts.md"
 }
 
+# ======================================================================
+# ---------- CARI EMAIL ----------
+# Hanya memakai data yang terbuka untuk umum atau layanan verifikasi resmi.
+# FINE-U tidak mengetes pemulihan kata sandi / pendaftaran di situs lain untuk
+# menebak akun milik seseorang, dan tidak menampilkan isi kredensial bocor.
+# ======================================================================
+EMAIL_DIR="$BASE/hasil-email"
+CACHE_DIR="$BASE/cache"
+
+FREE_MAIL=" gmail.com googlemail.com yahoo.com yahoo.co.id yahoo.co.uk ymail.com rocketmail.com outlook.com outlook.co.id hotmail.com hotmail.co.uk live.com msn.com icloud.com me.com mac.com aol.com proton.me protonmail.com pm.me gmx.com gmx.net mail.com yandex.com yandex.ru mail.ru zoho.com tutanota.com tuta.io fastmail.com qq.com 163.com 126.com "
+ROLE_LOCAL=" admin administrator info support sales contact kontak noreply no-reply donotreply postmaster webmaster hostmaster abuse hr billing help office hello marketing team cs customerservice finance humas redaksi security privacy legal press media mail email enquiry "
+FALLBACK_DISPOSABLE=" mailinator.com guerrillamail.com guerrillamail.net 10minutemail.com tempmail.com temp-mail.org yopmail.com trashmail.com sharklasers.com getnada.com throwawaymail.com dispostable.com maildrop.cc fakeinbox.com mintemail.com mohmal.com emailondeck.com tempail.com burnermail.io tempmailo.com "
+
+is_free_mail() { [[ $FREE_MAIL == *" $1 "* ]]; }
+
+email_valid() { # $1 = alamat (sudah huruf kecil)
+  local e=$1 l d lre='^[a-z0-9._%+-]+$' dre='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+  [[ $e == *@* ]] || return 1
+  l=${e%@*}; d=${e##*@}
+  (( ${#e} <= 254 && ${#l} >= 1 && ${#l} <= 64 )) || return 1
+  [[ $l =~ $lre ]] || return 1
+  [[ $l != .* && $l != *. && $l != *..* ]] || return 1
+  [[ $d =~ $dre ]]
+}
+
+email_slug() {
+  local s
+  s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -e 's/@/-at-/' -e 's/[^a-z0-9._+-]\{1,\}/-/g' -e 's/^[-.]*//' | cut -c1-80)
+  printf '%s' "${s:-tanpa-email}"
+}
+
+reg_domain() { # domain terdaftar (tebakan sederhana: 2 label terakhir, 3 untuk co.id, ac.uk, dst.)
+  local d=$1 n tld sld
+  local -a p
+  IFS=. read -ra p <<< "$d"; n=${#p[@]}
+  (( n <= 2 )) && { printf '%s' "$d"; return; }
+  tld=${p[n-1]}; sld=${p[n-2]}
+  if (( ${#tld} == 2 )) && [[ " co com ac go or net web sch my biz mil org gov edu id " == *" $sld "* ]]; then
+    printf '%s.%s.%s' "${p[n-3]}" "$sld" "$tld"
+  else
+    printf '%s.%s' "$sld" "$tld"
+  fi
+}
+
+# ---------- pembantu modul ----------
+# Setiap modul mencetak satu objek JSON:
+#   {id,title,state,delta,summary,lines:[{k,v}],links:[{t,u}],facts:[{t,v}]}
+# state: ok | warn | bad | info ; delta = pengaruh ke skor kepercayaan.
+mod_json() { # id title state delta summary [lines] [links] [facts]
+  jq -nc --arg id "$1" --arg t "$2" --arg s "$3" --argjson d "${4:-0}" --arg sum "${5:-}" \
+     --argjson l "${6:-[]}" --argjson k "${7:-[]}" --argjson f "${8:-[]}" \
+     '{id:$id, title:$t, state:$s, delta:$d, summary:$sum, lines:$l, links:$k, facts:$f}'
+}
+# Dipakai di dalam modul yang mendeklarasikan: local -a _L=() _K=() _F=()
+addl() { _L+=("$(jq -nc --arg k "$1" --arg v "$2" '{k:$k, v:$v}')"); }
+addk() { _K+=("$(jq -nc --arg t "$1" --arg u "$2" '{t:$t, u:$u}')"); }
+addf() { _F+=("$(jq -nc --arg t "$1" --arg v "$2" '{t:$t, v:$v}')"); }
+arr_json() { if [ "$#" -eq 0 ]; then echo '[]'; else printf '%s\n' "$@" | jq -sc .; fi; }
+emit() { # id title state delta summary  (memakai _L _K _F milik pemanggil)
+  mod_json "$1" "$2" "$3" "$4" "$5" "$(arr_json "${_L[@]}")" "$(arr_json "${_K[@]}")" "$(arr_json "${_F[@]}")"
+}
+
+# respons HTTP lengkap: mencetak "<isi>\n<kode>" (kode 404 dkk. tetap dikembalikan)
+http_get() {
+  local out
+  out=$(curl -sS --compressed --max-time "$CURL_TIMEOUT" -A "$(get_random_ua)" -w '\n%{http_code}' "$@") || return 1
+  printf '%s' "$out"
+}
+
+# ---------- 1. sintaks & alamat ----------
+email_typo_fix() {
+  case "$1" in
+    gmial.com|gmai.com|gamil.com|gmail.co|gmil.com|gmaill.com|gmail.con|gnail.com|gmal.com|gmail.cm|gmail.om|gmaik.com|gimail.com) echo gmail.com ;;
+    yahooo.com|yaho.com|yahou.com|yahoo.con|yahho.com|yhoo.com|yaoo.com) echo yahoo.com ;;
+    hotnail.com|hotmial.com|hotmai.com|hotmail.con|hormail.com) echo hotmail.com ;;
+    outlok.com|outloook.com|outlook.con|outllok.com) echo outlook.com ;;
+    iclod.com|icloud.con|icoud.com) echo icloud.com ;;
+    *) return 1 ;;
+  esac
+}
+
+em_syntax() {
+  local e=$1 l=${1%@*} d=${1##*@} base fix canon state=ok delta=5 sum="format valid" gl
+  local -a _L=() _K=() _F=()
+  addl "Alamat" "$e"
+  addl "Panjang" "${#l} karakter nama + ${#d} karakter domain"
+  base=${l%%+*}
+  if [[ $l == *+* ]]; then
+    addl "Alias (+tag)" "ya, tag \"${l#*+}\"; kotak masuk dasarnya ${base}@${d}"
+    sum="$sum, memakai alias +tag"
+  fi
+  if [ "$d" = gmail.com ] || [ "$d" = googlemail.com ]; then
+    gl=${base//./}; canon="${gl}@gmail.com"
+    [ "$canon" != "$e" ] && addl "Bentuk kanonik Gmail" "$canon (titik dan +tag diabaikan Gmail)"
+  fi
+  if is_free_mail "$d"; then addl "Jenis domain" "penyedia email gratis / publik"
+  else addl "Jenis domain" "domain sendiri (organisasi, bisnis, atau pribadi)"; fi
+  if [[ $ROLE_LOCAL == *" $base "* ]]; then
+    addl "Akun peran" "\"$base\" biasanya kotak masuk bersama, bukan milik satu orang"
+    state=warn; delta=$((delta - 5)); sum="$sum, akun peran/umum"
+  fi
+  if fix=$(email_typo_fix "$d"); then
+    addl "Kemungkinan salah ketik" "${l}@${fix}"
+    state=warn; delta=$((delta - 10)); sum="$sum, mungkin salah ketik domain"
+  fi
+  local dre='[0-9]{5,}'
+  if [[ $l =~ $dre ]]; then addl "Pola nama" "mengandung deret angka panjang (sering pada akun acak/massal)"; fi
+  emit syntax "Sintaks & alamat" "$state" "$delta" "$sum"
+}
+
+# ---------- 2. DNS & server email ----------
+doh() { # $1=nama $2=tipe
+  fetch -H 'accept: application/dns-json' -G --data-urlencode "name=$1" --data-urlencode "type=$2" \
+    "https://cloudflare-dns.com/dns-query"
+}
+
+mx_provider() { # $1 = host MX
+  case "$1" in
+    *google.com|*googlemail.com) echo "Google (Gmail / Workspace)" ;;
+    *protection.outlook.com|*outlook.com|*hotmail.com) echo "Microsoft (Outlook / 365)" ;;
+    *yahoodns.net|*yahoo.com) echo "Yahoo" ;;
+    *zoho.com|*zoho.eu|*zoho.in) echo "Zoho Mail" ;;
+    *protonmail.ch|*proton.me) echo "Proton Mail" ;;
+    *icloud.com|*me.com) echo "Apple iCloud" ;;
+    *messagingengine.com) echo "Fastmail" ;;
+    *yandex.net|*yandex.ru) echo "Yandex" ;;
+    *mimecast.com) echo "Mimecast (gateway keamanan)" ;;
+    *pphosted.com|*ppe-hosted.com) echo "Proofpoint (gateway keamanan)" ;;
+    *mailgun.org) echo "Mailgun" ;;
+    *secureserver.net) echo "GoDaddy" ;;
+    *titan.email) echo "Titan (Hostinger)" ;;
+    *registrar-servers.com|*privateemail.com) echo "Namecheap" ;;
+    *niagahoster*|*niaga*) echo "Niagahoster" ;;
+    *rumahweb*) echo "Rumahweb" ;;
+    *dewaweb*) echo "DewaWeb" ;;
+    *idwebhost*) echo "IDwebhost" ;;
+    *jagoanhosting*) echo "JagoanHosting" ;;
+    *domainesia*) echo "DomaiNesia" ;;
+    *biznetgio*|*biznet.id*) echo "Biznet Gio" ;;
+    *qwords*) echo "Qwords" ;;
+    *exabytes*) echo "Exabytes" ;;
+    *hostinger*) echo "Hostinger" ;;
+    *ovh.net) echo "OVH" ;;
+    *qq.com) echo "Tencent QQ" ;;
+    *) echo "" ;;
+  esac
+}
+
+em_dns() {
+  local e=$1 d=${1##*@} mxj st mxs a spf dm sel p tmpd dk=() line host prov state=ok delta=0 sum
+  local -a _L=() _K=() _F=()
+  mxj=$(doh "$d" MX) || return 1
+  st=$(jq -r '.Status // 0' <<< "$mxj")
+  if [ "$st" = 3 ]; then
+    addl "Domain" "$d tidak ada (NXDOMAIN)"
+    emit dns "DNS & server email" bad -60 "domain tidak ada"; return 0
+  fi
+  mxs=$(jq -r '[(.Answer // [])[] | select(.type == 15) | .data] | map(split(" ")) | map({p:(.[0]|tonumber? // 0), h:((.[1] // "")|sub("\\.$";"")|ascii_downcase)}) | sort_by(.p) | .[] | "\(.p) \(.h)"' <<< "$mxj")
+
+  if [ -z "$mxs" ]; then
+    a=$(doh "$d" A) || a='{}'
+    if [ "$(jq '[(.Answer // [])[] | select(.type == 1)] | length' <<< "$a")" -gt 0 ]; then
+      addl "MX" "tidak ada; hanya record A (server menerima lewat fallback, jarang dipakai untuk email sungguhan)"
+      state=warn; delta=-15; sum="tanpa MX, hanya record A"
+    else
+      addl "MX" "tidak ada, dan domain tidak punya alamat server"
+      emit dns "DNS & server email" bad -50 "domain tidak bisa menerima email"; return 0
+    fi
+  elif grep -qE '^0 $' <<< "$mxs"; then
+    addl "MX" "null MX: domain secara tegas menyatakan tidak menerima email"
+    emit dns "DNS & server email" bad -50 "domain menolak semua email (null MX)"; return 0
+  else
+    local list=() n=0
+    while IFS= read -r line; do n=$((n + 1)); [ "$n" -le 4 ] && list+=("${line#* } (prio ${line%% *})"); done <<< "$mxs"
+    addl "MX" "$(IFS=,; printf '%s' "${list[*]}" | sed 's/,/, /g')$([ "$n" -gt 4 ] && printf ' … +%d lagi' "$((n - 4))")"
+    host=$(head -n1 <<< "$mxs"); host=${host#* }
+    prov=$(mx_provider "$host")
+    [ -n "$prov" ] && { addl "Penyedia email" "$prov"; addf penyedia "$prov"; }
+    state=ok; delta=15; sum="MX aktif${prov:+, $prov}"
+  fi
+
+  # SPF
+  spf=$(doh "$d" TXT) && spf=$(jq -r '[(.Answer // [])[] | select(.type == 16) | .data | gsub("\" \"";"") | gsub("\"";"") | select(startswith("v=spf1"))] | .[0] // ""' <<< "$spf") || spf=""
+  if [ -n "$spf" ]; then
+    case "$spf" in
+      *" -all"*) addl "SPF" "ada, ketat (-all)"; delta=$((delta + 5)) ;;
+      *" ~all"*) addl "SPF" "ada, sedang (~all)"; delta=$((delta + 3)) ;;
+      *) addl "SPF" "ada, longgar (tanpa -all / ~all)"; delta=$((delta + 1)) ;;
+    esac
+  else addl "SPF" "tidak ada"; fi
+  # DMARC
+  dm=$(doh "_dmarc.$d" TXT) && dm=$(jq -r '[(.Answer // [])[] | select(.type == 16) | .data | gsub("\" \"";"") | gsub("\"";"") | select(startswith("v=DMARC1"))] | .[0] // ""' <<< "$dm") || dm=""
+  if [ -n "$dm" ]; then
+    p=$(sed -n 's/.*[; ]p=\([a-z]*\).*/\1/p' <<< " $dm")
+    case "$p" in
+      reject|quarantine) addl "DMARC" "ada, kebijakan $p (domain dikelola serius)"; delta=$((delta + 4)) ;;
+      *) addl "DMARC" "ada, kebijakan ${p:-none} (hanya memantau)"; delta=$((delta + 1)) ;;
+    esac
+  else addl "DMARC" "tidak ada"; fi
+  # DKIM: selector umum
+  tmpd=$(mktemp -d)
+  for sel in google selector1 selector2 default k1 dkim; do
+    ( r=$(doh "$sel._domainkey.$d" TXT 2>/dev/null) \
+        && [ "$(jq '[(.Answer // [])[] | select(.type == 16 or .type == 5)] | length' <<< "$r")" -gt 0 ] \
+        && : > "$tmpd/$sel" ) &
+  done
+  wait
+  for sel in google selector1 selector2 default k1 dkim; do [ -e "$tmpd/$sel" ] && dk+=("$sel"); done
+  rm -rf "$tmpd"
+  if [ "${#dk[@]}" -gt 0 ]; then addl "DKIM" "terdeteksi (selector: ${dk[*]})"; delta=$((delta + 2))
+  else addl "DKIM" "tidak ditemukan pada selector umum (belum tentu tidak ada)"; fi
+  emit dns "DNS & server email" "$state" "$delta" "$sum"
+}
+
+# ---------- 3. email sekali pakai ----------
+disposable_list() { # pastikan cache daftar domain ada (diperbarui tiap 7 hari); cetak path
+  local f="$CACHE_DIR/disposable-domains.txt"
+  mkdir -p "$CACHE_DIR"
+  if [ ! -s "$f" ] || [ -n "$(find "$f" -mtime +7 2>/dev/null)" ]; then
+    fetch "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/main/disposable_email_blocklist.conf" 2>/dev/null \
+      | tr -d '\r' | tr 'A-Z' 'a-z' | grep -E '^[a-z0-9.-]+$' > "$f.tmp"
+    if [ -s "$f.tmp" ]; then mv "$f.tmp" "$f"; else rm -f "$f.tmp"; fi
+  fi
+  [ -s "$f" ] && printf '%s' "$f"
+}
+
+em_disposable() {
+  local d=${1##*@} f x hit="" cnt=0 kb=""
+  local -a _L=() _K=() _F=()
+  if f=$(disposable_list); then
+    cnt=$(wc -l < "$f")
+    x=$d
+    while [[ $x == *.* ]]; do
+      grep -Fxq "$x" "$f" && { hit="$x"; break; }
+      x=${x#*.}
+    done
+    addl "Daftar lokal" "$cnt domain sekali pakai (repo disposable-email-domains), $([ -n "$hit" ] && echo "COCOK: $hit" || echo "tidak cocok")"
+  else
+    [[ $FALLBACK_DISPOSABLE == *" $d "* ]] && hit=$d
+    addl "Daftar lokal" "daftar unduhan tidak tersedia, memakai daftar bawaan kecil, $([ -n "$hit" ] && echo "COCOK" || echo "tidak cocok")"
+  fi
+  kb=$(fetch "https://open.kickbox.com/v1/disposable/$(urlenc "$d")" 2>/dev/null | jq -r 'if .disposable == true then "ya" elif .disposable == false then "tidak" else "" end' 2>/dev/null)
+  [ -n "$kb" ] && addl "Kickbox (publik)" "sekali pakai: $kb"
+  [ "$kb" = ya ] && [ -z "$hit" ] && hit=$d
+  if [ -n "$hit" ]; then emit disposable "Email sekali pakai" bad -60 "domain sekali pakai / temp mail"
+  else emit disposable "Email sekali pakai" ok 5 "bukan domain sekali pakai"; fi
+}
+
+# ---------- 4. registrasi domain (RDAP) ----------
+em_rdap() {
+  local d=${1##*@} rd r code body info reg exp registrar ns st age regts exp_d delta=0 state=info sum
+  local -a _L=() _K=() _F=()
+  if is_free_mail "$d"; then
+    addl "Domain" "$d adalah penyedia email besar, umur domain tidak relevan"
+    emit rdap "Registrasi domain" info 0 "penyedia email publik"; return 0
+  fi
+  rd=$(reg_domain "$d")
+  r=$(http_get -L -H 'accept: application/rdap+json' "https://rdap.org/domain/$(urlenc "$rd")") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  if [ "$code" != 200 ]; then
+    addl "Domain" "$rd (data RDAP tidak tersedia, kode $code)"
+    emit rdap "Registrasi domain" info 0 "data registrasi tidak tersedia"; return 0
+  fi
+  info=$(jq -c 'def ev($a): ((.events // []) | map(select(.eventAction == $a)) | .[0].eventDate // "");
+    { reg: ev("registration"), exp: ev("expiration"), upd: ev("last changed"),
+      registrar: ((.entities // []) | map(select((.roles // []) | index("registrar"))) | (.[0].vcardArray[1]? // []) | map(select(.[0] == "fn")) | (.[0][3]? // "")),
+      ns: ((.nameservers // []) | map(.ldhName | ascii_downcase)), st: (.status // []) }' <<< "$body") || return 1
+  reg=$(jq -r '.reg' <<< "$info"); exp=$(jq -r '.exp' <<< "$info")
+  registrar=$(jq -r '.registrar' <<< "$info")
+  addl "Domain terdaftar" "$rd"
+  if [ -n "$reg" ] && regts=$(date -d "$reg" +%s 2>/dev/null) && age=$(( ($(date +%s) - regts) / 86400 )); then
+    addl "Tanggal daftar" "${reg%%T*} (${age} hari / sekitar $((age / 365)) tahun $(( (age % 365) / 30 )) bulan lalu)"
+    if [ "$age" -lt 30 ]; then state=bad; delta=-25; sum="domain baru sekali ($age hari)"
+    elif [ "$age" -lt 180 ]; then state=warn; delta=-10; sum="domain masih muda ($age hari)"
+    elif [ "$age" -ge 730 ]; then state=ok; delta=8; sum="domain mapan (>2 tahun)"
+    else state=ok; delta=3; sum="domain berumur $((age / 30)) bulan"; fi
+  else sum="tanggal daftar tidak diketahui"; fi
+  if [ -n "$exp" ]; then
+    addl "Kedaluwarsa" "${exp%%T*}"
+    if exp_d=$(date -d "$exp" +%s 2>/dev/null) && [ $(( (exp_d - $(date +%s)) / 86400 )) -lt 30 ]; then
+      addl "Catatan" "domain hampir kedaluwarsa (kurang dari 30 hari)"
+    fi
+  fi
+  [ -n "$registrar" ] && addl "Registrar" "$registrar"
+  ns=$(jq -r '.ns | .[:4] | join(", ")' <<< "$info"); [ -n "$ns" ] && addl "Nameserver" "$ns"
+  st=$(jq -r '.st | join(", ")' <<< "$info"); [ -n "$st" ] && addl "Status" "$st"
+  emit rdap "Registrasi domain" "$state" "$delta" "$sum"
+}
+
+# ---------- 5. jejak digital publik ----------
+em_gravatar() {
+  local e=$1 h r code body p nm usr loc about n
+  local -a _L=() _K=() _F=()
+  h=$(printf '%s' "$e" | md5sum | cut -d' ' -f1)
+  r=$(http_get -L "https://en.gravatar.com/$h.json") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  if [ "$code" = 200 ] && jq -e '.entry[0]' >/dev/null 2>&1 <<< "$body"; then
+    p=$(jq -c '.entry[0] | {name:(.displayName // ""), user:(.preferredUsername // ""), about:(.aboutMe // ""),
+        loc:(.currentLocation // ""), url:(.profileUrl // ""),
+        accounts:[(.accounts // [])[] | {n:(.name // .shortname // "akun"), u:(.url // "")}],
+        urls:[(.urls // [])[] | {t:(.title // ""), u:(.value // "")}]}' <<< "$body")
+    nm=$(jq -r .name <<< "$p"); usr=$(jq -r .user <<< "$p"); loc=$(jq -r .loc <<< "$p"); about=$(jq -r '.about | gsub("\\s+";" ") | .[0:140]' <<< "$p")
+    addl "Profil" "ada (dibuat dan dipublikasikan sendiri oleh pemilik email)"
+    [ -n "$nm" ] && { addl "Nama tampilan" "$nm"; addf nama "$nm"; }
+    [ -n "$usr" ] && { addl "Username" "$usr"; addf username "$usr"; }
+    [ -n "$loc" ] && { addl "Lokasi (diisi sendiri)" "$loc"; addf lokasi "$loc"; }
+    [ -n "$about" ] && addl "Tentang" "$about"
+    while IFS=$'\t' read -r n u; do
+      [ -z "$u" ] && continue
+      addk "Gravatar › $n" "$u"; addf akun "$n: $u"
+    done < <(jq -r '.accounts[] | [.n, .u] | @tsv' <<< "$p")
+    while IFS=$'\t' read -r n u; do
+      [ -z "$u" ] && continue
+      addk "Situs${n:+ · $n}" "$u"
+    done < <(jq -r '.urls[] | [.t, .u] | @tsv' <<< "$p")
+    addk "Profil Gravatar" "$(jq -r '.url' <<< "$p")"
+    emit gravatar "Gravatar" ok 8 "profil publik ditemukan${nm:+ ($nm)}"
+  else
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$CURL_TIMEOUT" -A "$(get_random_ua)" "https://gravatar.com/avatar/$h?d=404" 2>/dev/null)
+    if [ "$code" = 200 ]; then
+      addl "Avatar" "ada foto Gravatar, tanpa profil publik"
+      emit gravatar "Gravatar" info 4 "hanya foto avatar"
+    else
+      addl "Profil" "tidak ada Gravatar untuk email ini"
+      emit gravatar "Gravatar" info 0 "tidak ada"
+    fi
+  fi
+}
+
+em_github() {
+  local e=$1 u c logins names repos total
+  local -a h=() _L=() _K=() _F=()
+  [ -n "${GITHUB_TOKEN:-}" ] && h=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  u=$(fetch "${h[@]}" -G --data-urlencode "q=$e in:email" "https://api.github.com/search/users") || u=""
+  c=$(fetch "${h[@]}" -H 'Accept: application/vnd.github+json' -G --data-urlencode "q=author-email:$e" \
+        --data-urlencode "per_page=50" "https://api.github.com/search/commits") || c=""
+  [ -z "$u" ] && [ -z "$c" ] && return 1
+  [ -z "$u" ] && u='{}'; [ -z "$c" ] && c='{}'
+  logins=$(jq -rn --argjson u "$u" --argjson c "$c" '
+      ([($u.items // [])[] | .login] + [($c.items // [])[] | (.author.login // empty)])
+      | group_by(.) | map({l:.[0], n:length}) | sort_by(-.n) | .[] | .l')
+  names=$(jq -r '[(.items // [])[] | (.commit.author.name // empty)] | unique | .[:5] | join(", ")' <<< "$c")
+  repos=$(jq -r '[(.items // [])[] | .repository.full_name] | unique | .[:5] | join(", ")' <<< "$c")
+  total=$(jq -r '.total_count // 0' <<< "$c")
+  if [ -z "$logins" ] && [ "$total" -eq 0 ]; then
+    addl "Hasil" "tidak ada akun GitHub atau commit publik dengan email ini"
+    emit github "GitHub" info 0 "tidak ditemukan"; return 0
+  fi
+  local l
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    addl "Akun GitHub" "@$l"; addk "GitHub › @$l" "https://github.com/$l"
+    addf username "$l"; addf akun "GitHub: https://github.com/$l"
+  done <<< "$logins"
+  [ "$total" -gt 0 ] && addl "Commit publik" "$total commit memakai email ini sebagai penulis"
+  [ -n "$names" ] && { addl "Nama di commit" "$names"; while IFS= read -r l; do addf nama "$l"; done < <(tr ',' '\n' <<< "$names" | sed 's/^ *//'); }
+  [ -n "$repos" ] && addl "Repositori" "$repos"
+  emit github "GitHub" ok 10 "email terhubung ke aktivitas publik di GitHub"
+}
+
+em_pgp() {
+  local e=$1 r code
+  local -a _L=() _K=() _F=()
+  r=$(http_get "https://keys.openpgp.org/vks/v1/by-email/$(urlenc "$e")") || return 1
+  code=${r##*$'\n'}
+  if [ "$code" = 200 ]; then
+    addl "Kunci PGP" "ada kunci publik terverifikasi (pemilik pernah mengonfirmasi email ini)"
+    addk "keys.openpgp.org" "https://keys.openpgp.org/search?q=$(urlenc "$e")"
+    emit pgp "Kunci PGP" ok 3 "kunci publik terverifikasi"
+  else
+    addl "Kunci PGP" "tidak ada di keys.openpgp.org"
+    emit pgp "Kunci PGP" info 0 "tidak ada"
+  fi
+}
+
+em_emailrep() {
+  local e=$1 j prof
+  local -a h=() _L=() _K=() _F=()
+  [ -n "${EMAILREP_API_KEY:-}" ] && h=(-H "Key: $EMAILREP_API_KEY")
+  j=$(fetch "${h[@]}" "https://emailrep.io/$(urlenc "$e")") || return 1
+  jq -e '.reputation' >/dev/null 2>&1 <<< "$j" || return 1
+  local rep susp refs delta=0 state=ok flags=() fs ls
+  rep=$(jq -r '.reputation' <<< "$j"); susp=$(jq -r '.suspicious' <<< "$j"); refs=$(jq -r '.references // 0' <<< "$j")
+  addl "Reputasi" "$rep$([ "$susp" = true ] && echo ' (ditandai mencurigakan)')"
+  addl "Jumlah referensi" "$refs sumber data yang pernah melihat email ini"
+  fs=$(jq -r '.details.first_seen // empty' <<< "$j"); ls=$(jq -r '.details.last_seen // empty' <<< "$j")
+  [ -n "$fs" ] && [ "$fs" != never ] && addl "Pertama terlihat" "$fs"
+  [ -n "$ls" ] && [ "$ls" != never ] && addl "Terakhir terlihat" "$ls"
+  prof=$(jq -r '(.details.profiles // []) | join(", ")' <<< "$j")
+  if [ -n "$prof" ]; then
+    addl "Terdaftar di" "$prof"
+    local x; while IFS= read -r x; do [ -n "$x" ] && addf akun "Terdeteksi di $x"; done < <(jq -r '(.details.profiles // [])[]' <<< "$j")
+  fi
+  jq -e '.details.credentials_leaked == true' >/dev/null <<< "$j" && addl "Kredensial bocor" "ya (pernah muncul di kebocoran data)"
+  jq -e '.details.malicious_activity == true' >/dev/null <<< "$j" && { addl "Aktivitas berbahaya" "ya"; flags+=(mal); }
+  jq -e '.details.blacklisted == true' >/dev/null <<< "$j" && { addl "Daftar hitam" "ya"; flags+=(bl); }
+  jq -e '.details.spam == true' >/dev/null <<< "$j" && { addl "Spam" "ya"; flags+=(spam); }
+  case "$rep" in high) delta=$((delta + 10)) ;; medium) delta=$((delta + 5)) ;; low) delta=$((delta - 10)); state=warn ;; esac
+  [ "$susp" = true ] && { delta=$((delta - 20)); state=bad; }
+  [[ " ${flags[*]} " == *" mal "* ]] && { delta=$((delta - 30)); state=bad; }
+  [[ " ${flags[*]} " == *" bl "* ]] && { delta=$((delta - 30)); state=bad; }
+  [[ " ${flags[*]} " == *" spam "* ]] && { delta=$((delta - 10)); [ "$state" = ok ] && state=warn; }
+  [ -n "$prof" ] && delta=$((delta + 5))
+  emit emailrep "EmailRep" "$state" "$delta" "reputasi $rep, $refs referensi${prof:+, terlihat di $prof}"
+}
+
+# ---------- 6. kebocoran data (hanya nama kebocoran, tanpa isi kredensial) ----------
+em_leakcheck() {
+  local e=$1 j found fields src
+  local -a _L=() _K=() _F=()
+  j=$(fetch "https://leakcheck.io/api/public?check=$(urlenc "$e")") || return 1
+  jq -e '.success == true' >/dev/null 2>&1 <<< "$j" || return 1
+  found=$(jq -r '.found // 0' <<< "$j")
+  if [ "$found" -eq 0 ]; then
+    addl "Hasil" "tidak ditemukan di basis data LeakCheck"
+    emit leakcheck "LeakCheck" ok 0 "tidak ada kebocoran tercatat"; return 0
+  fi
+  fields=$(jq -r '(.fields // []) | join(", ")' <<< "$j")
+  src=$(jq -r '(.sources // []) | map(.name + (if (.date // "") != "" then " (" + .date + ")" else "" end)) | .[:10] | join(", ")' <<< "$j")
+  addl "Muncul di" "$found kebocoran data"
+  [ -n "$fields" ] && addl "Jenis data terpapar" "$fields"
+  [ -n "$src" ] && addl "Sumber kebocoran" "$src"
+  addl "Artinya" "alamat ini aktif/nyata sejak lama, tetapi juga pernah terekspos; pemilik sebaiknya mengganti kata sandi"
+  emit leakcheck "LeakCheck" warn 4 "muncul di $found kebocoran data"
+}
+
+em_hibp() {
+  local e=$1 r code body pr pcode pbody n
+  local -a _L=() _K=() _F=()
+  r=$(http_get -H "hibp-api-key: $HIBP_API_KEY" "https://haveibeenpwned.com/api/v3/breachedaccount/$(urlenc "$e")?truncateResponse=false") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  case "$code" in
+    404) addl "Kebocoran" "tidak ditemukan di HaveIBeenPwned"; emit hibp "HaveIBeenPwned" ok 0 "tidak ada kebocoran tercatat"; return 0 ;;
+    200) ;;
+    *) return 1 ;;
+  esac
+  n=$(jq 'length' <<< "$body")
+  addl "Muncul di" "$n kebocoran data"
+  while IFS= read -r line; do addl "•" "$line"; done < <(jq -r 'sort_by(.BreachDate) | reverse | .[:8][]
+      | "\(.Title) (\(.BreachDate // "?")): \((.DataClasses // []) | .[:6] | join(", "))"' <<< "$body")
+  [ "$n" -gt 8 ] && addl "" "… +$((n - 8)) kebocoran lain"
+  addl "Semua jenis data" "$(jq -r '[.[].DataClasses[]?] | unique | join(", ")' <<< "$body")"
+  pr=$(http_get -H "hibp-api-key: $HIBP_API_KEY" "https://haveibeenpwned.com/api/v3/pasteaccount/$(urlenc "$e")") && {
+    pcode=${pr##*$'\n'}; pbody=${pr%$'\n'*}
+    [ "$pcode" = 200 ] && addl "Paste publik" "muncul di $(jq 'length' <<< "$pbody") paste (mis. Pastebin)"
+  }
+  addk "HaveIBeenPwned" "https://haveibeenpwned.com/account/$(urlenc "$e")"
+  emit hibp "HaveIBeenPwned" warn 4 "muncul di $n kebocoran data"
+}
+
+# ---------- 7. layanan verifikasi berkunci ----------
+em_hunter() {
+  local e=$1 j st sc delta=0 state=ok nsrc
+  local -a _L=() _K=() _F=()
+  j=$(fetch -G --data-urlencode "email=$e" --data-urlencode "api_key=$HUNTER_API_KEY" "https://api.hunter.io/v2/email-verifier") || return 1
+  jq -e '.data' >/dev/null 2>&1 <<< "$j" || return 1
+  st=$(jq -r '.data.status // "unknown"' <<< "$j"); sc=$(jq -r '.data.score // "?"' <<< "$j")
+  addl "Status" "$st (skor $sc/100)"
+  addl "Webmail" "$(jq -r 'if .data.webmail then "ya" else "tidak" end' <<< "$j")"
+  addl "Accept-all" "$(jq -r 'if .data.accept_all then "ya (server menerima semua alamat, hasil kurang pasti)" else "tidak" end' <<< "$j")"
+  addl "SMTP" "server $(jq -r '.data.smtp_server' <<< "$j"), cek: $(jq -r '.data.smtp_check' <<< "$j")"
+  [ "$(jq -r '.data.gibberish // false' <<< "$j")" = true ] && addl "Pola nama" "terlihat acak (gibberish)"
+  nsrc=$(jq -r '(.data.sources // []) | length' <<< "$j")
+  if [ "$nsrc" -gt 0 ]; then
+    addl "Ditemukan di web" "$nsrc halaman publik (data Hunter)"
+    local d u
+    while IFS=$'\t' read -r d u; do addk "$d" "$u"; done < <(jq -r '(.data.sources // [])[:8][] | [.domain, .uri] | @tsv' <<< "$j")
+  fi
+  case "$st" in
+    valid) delta=20 ;; accept_all) delta=3 ;; webmail) delta=2 ;;
+    invalid) delta=-50; state=bad ;; disposable) delta=-50; state=bad ;; *) state=info ;;
+  esac
+  [ "$nsrc" -gt 0 ] && delta=$((delta + 8))
+  emit hunter "Hunter" "$state" "$delta" "status $st, skor $sc"
+}
+
+em_abstract() {
+  local e=$1 j dl q delta=0 state=ok
+  local -a _L=() _K=() _F=()
+  j=$(fetch -G --data-urlencode "email=$e" --data-urlencode "api_key=$ABSTRACT_API_KEY" "https://emailvalidation.abstractapi.com/v1/") || return 1
+  jq -e '.email' >/dev/null 2>&1 <<< "$j" || return 1
+  dl=$(jq -r '.deliverability // "UNKNOWN"' <<< "$j"); q=$(jq -r '.quality_score // "?"' <<< "$j")
+  addl "Deliverability" "$dl (skor kualitas $q)"
+  addl "Format valid" "$(jq -r 'if .is_valid_format.value then "ya" else "tidak" end' <<< "$j")"
+  addl "MX ditemukan" "$(jq -r 'if .is_mx_found.value then "ya" else "tidak" end' <<< "$j")"
+  addl "SMTP valid" "$(jq -r 'if .is_smtp_valid.value then "ya" else "tidak" end' <<< "$j")"
+  addl "Email gratis" "$(jq -r 'if .is_free_email.value then "ya" else "tidak" end' <<< "$j")"
+  addl "Sekali pakai" "$(jq -r 'if .is_disposable_email.value then "ya" else "tidak" end' <<< "$j")"
+  addl "Akun peran" "$(jq -r 'if .is_role_email.value then "ya" else "tidak" end' <<< "$j")"
+  addl "Catch-all" "$(jq -r 'if .is_catchall_email.value then "ya" else "tidak" end' <<< "$j")"
+  [ -n "$(jq -r '.autocorrect // empty' <<< "$j")" ] && addl "Saran koreksi" "$(jq -r .autocorrect <<< "$j")"
+  case "$dl" in DELIVERABLE) delta=20 ;; UNDELIVERABLE) delta=-50; state=bad ;; RISKY) delta=-10; state=warn ;; *) state=info ;; esac
+  jq -e '.is_disposable_email.value == true' >/dev/null <<< "$j" && { delta=$((delta - 40)); state=bad; }
+  emit abstract "Abstract API" "$state" "$delta" "$dl, kualitas $q"
+}
+
+em_zerobounce() {
+  local e=$1 j st sub fn ln delta=0 state=ok
+  local -a _L=() _K=() _F=()
+  j=$(fetch -G --data-urlencode "api_key=$ZEROBOUNCE_API_KEY" --data-urlencode "email=$e" --data-urlencode "ip_address=" \
+        "https://api.zerobounce.net/v2/validate") || return 1
+  jq -e '.status' >/dev/null 2>&1 <<< "$j" || return 1
+  st=$(jq -r '.status' <<< "$j"); sub=$(jq -r '.sub_status // ""' <<< "$j")
+  addl "Status" "$st${sub:+ ($sub)}"
+  addl "Email gratis" "$(jq -r 'if .free_email then "ya" else "tidak" end' <<< "$j")"
+  [ -n "$(jq -r '.did_you_mean // empty' <<< "$j")" ] && addl "Mungkin maksudnya" "$(jq -r .did_you_mean <<< "$j")"
+  [ -n "$(jq -r '.domain_age_days // empty' <<< "$j")" ] && addl "Umur domain" "$(jq -r .domain_age_days <<< "$j") hari"
+  [ -n "$(jq -r '.smtp_provider // empty' <<< "$j")" ] && addl "Penyedia SMTP" "$(jq -r .smtp_provider <<< "$j")"
+  [ -n "$(jq -r '.mx_record // empty' <<< "$j")" ] && addl "MX" "$(jq -r .mx_record <<< "$j")"
+  fn=$(jq -r '.firstname // empty' <<< "$j"); ln=$(jq -r '.lastname // empty' <<< "$j")
+  [ -n "$fn$ln" ] && { addl "Nama (data ZeroBounce)" "$fn $ln"; addf nama "$fn $ln"; }
+  case "$st" in
+    valid) delta=20 ;; catch-all) delta=2; state=info ;;
+    invalid|spamtrap|abuse|do_not_mail) delta=-50; state=bad ;;
+    *) state=info ;;
+  esac
+  emit zerobounce "ZeroBounce" "$state" "$delta" "status $st${sub:+ ($sub)}"
+}
+
+em_ipqs() {
+  local e=$1 j fs delta=0 state=ok
+  local -a _L=() _K=() _F=()
+  j=$(fetch "https://www.ipqualityscore.com/api/json/email/$IPQS_API_KEY/$(urlenc "$e")") || return 1
+  jq -e '.success == true' >/dev/null 2>&1 <<< "$j" || return 1
+  fs=$(jq -r '.fraud_score // 0' <<< "$j")
+  addl "Skor fraud" "$fs/100"
+  addl "Valid" "$(jq -r 'if .valid then "ya" else "tidak" end' <<< "$j")"
+  addl "Deliverability" "$(jq -r '.deliverability // "?"' <<< "$j")"
+  addl "Sekali pakai" "$(jq -r 'if .disposable then "ya" else "tidak" end' <<< "$j")"
+  addl "Penyalahgunaan terbaru" "$(jq -r 'if .recent_abuse then "ya" else "tidak" end' <<< "$j")"
+  addl "Honeypot / spam trap" "$(jq -r '"honeypot: " + (if .honeypot then "ya" else "tidak" end) + ", spam trap: " + (.spam_trap_score // "none")' <<< "$j")"
+  addl "Pernah bocor" "$(jq -r 'if .leaked then "ya" else "tidak" end' <<< "$j")"
+  [ "$(jq -r '.first_seen.human // empty' <<< "$j")" != "" ] && addl "Pertama terlihat" "$(jq -r '.first_seen.human' <<< "$j")"
+  [ "$(jq -r '.domain_age.human // empty' <<< "$j")" != "" ] && addl "Umur domain" "$(jq -r '.domain_age.human' <<< "$j")"
+  if [ "$fs" -ge 75 ]; then delta=-35; state=bad
+  elif [ "$fs" -gt 20 ]; then delta=-5; state=warn
+  else delta=10; fi
+  jq -e '.recent_abuse == true' >/dev/null <<< "$j" && { delta=$((delta - 25)); state=bad; }
+  jq -e '.honeypot == true' >/dev/null <<< "$j" && { delta=$((delta - 20)); state=bad; }
+  jq -e '.disposable == true' >/dev/null <<< "$j" && { delta=$((delta - 40)); state=bad; }
+  emit ipqs "IPQualityScore" "$state" "$delta" "skor fraud $fs/100"
+}
+
+# ---------- 8. tool OSINT eksternal & layanan tambahan ----------
+# Holehe dan GHunt dipanggil sebagai program terpisah yang kamu pasang sendiri
+# (pipx install holehe ; pipx install ghunt, lalu `ghunt login`). Aktif otomatis jika ada di PATH.
+em_active() { # $1 = daftar syarat: NAMA_ENV atau cmd:program
+  local v
+  for v in $1; do
+    case "$v" in
+      cmd:*) command -v "${v#cmd:}" >/dev/null 2>&1 || return 1 ;;
+      *) [ -n "${!v:-}" ] || return 1 ;;
+    esac
+  done
+  return 0
+}
+
+em_holehe() {
+  local e=$1 out site n=0 sites=()
+  local -a _L=() _K=() _F=()
+  out=$(timeout 150 holehe --only-used --no-color --no-clear "$e" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g') || return 1
+  while IFS= read -r site; do
+    [ -z "$site" ] && continue
+    sites+=("$site"); addf akun "Terdaftar di $site"
+  done < <(sed -n 's/^\[+\][[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p' <<< "$out")
+  n=${#sites[@]}
+  if [ "$n" -eq 0 ]; then
+    addl "Hasil" "tidak ada akun terdeteksi di situs yang didukung Holehe"
+    emit holehe "Holehe" info 0 "tidak ada akun terdeteksi"; return 0
+  fi
+  addl "Akun terdeteksi" "$n situs"
+  addl "Situs" "$(IFS=,; printf '%s' "${sites[*]}" | sed 's/,/, /g')"
+  emit holehe "Holehe" ok $(( n > 5 ? 10 : n * 2 )) "terdaftar di $n situs"
+}
+
+em_ghunt() {
+  local e=$1 d=${1##*@} tmp gaia name photo
+  local -a _L=() _K=() _F=()
+  [ "$d" = gmail.com ] || [ "$d" = googlemail.com ] || { emit ghunt "GHunt" info 0 "dilewati (bukan alamat Gmail)"; return 0; }
+  tmp=$(mktemp -d)
+  timeout 120 ghunt email "$e" --json "$tmp/out.json" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+  [ -s "$tmp/out.json" ] || { rm -rf "$tmp"; return 1; }
+  gaia=$(jq -r '[.. | objects | .personId? // empty] | .[0] // empty' "$tmp/out.json" 2>/dev/null)
+  name=$(jq -r '[.. | objects | .fullname? // empty] | .[0] // empty' "$tmp/out.json" 2>/dev/null)
+  photo=$(jq -r '[.. | objects | select(has("profilePhotos")) | .profilePhotos | .. | objects | .url? // empty] | .[0] // empty' "$tmp/out.json" 2>/dev/null)
+  rm -rf "$tmp"
+  if [ -z "$gaia" ] && [ -z "$name" ]; then
+    addl "Hasil" "tidak ada profil Google publik (atau format keluaran GHunt tidak dikenali)"
+    emit ghunt "GHunt" info 0 "tidak ada profil publik"; return 0
+  fi
+  [ -n "$gaia" ] && { addl "Gaia ID" "$gaia"; addk "Google Maps (kontribusi)" "https://www.google.com/maps/contrib/$gaia"; }
+  [ -n "$name" ] && { addl "Nama profil Google" "$name"; addf nama "$name"; }
+  [ -n "$photo" ] && addk "Foto profil" "$photo"
+  [ -n "$gaia" ] && addf akun "Google Maps: https://www.google.com/maps/contrib/$gaia"
+  emit ghunt "GHunt" ok 10 "profil Google publik ditemukan${name:+ ($name)}"
+}
+
+em_dehashed() {
+  local e=$1 r code body n
+  local -a _L=() _K=() _F=()
+  r=$(http_get -X POST -H "Dehashed-Api-Key: $DEHASHED_API_KEY" -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg q "email:$e" '{query:$q, page:1, size:100}')" "https://api.dehashed.com/v2/search") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  [ "$code" = 200 ] || return 1
+  jq -e '.entries' >/dev/null 2>&1 <<< "$body" || return 1
+  n=$(jq -r '.total // (.entries | length)' <<< "$body")
+  if [ "$n" -eq 0 ]; then
+    addl "Hasil" "tidak ada catatan di DeHashed"
+    emit dehashed "DeHashed" ok 0 "tidak ada catatan"; return 0
+  fi
+  addl "Catatan" "$n entri"
+  addl "Basis data" "$(jq -r '[.entries[].database_name // empty] | unique | .[:15] | join(", ")' <<< "$body")"
+  addl "Jenis data terpapar" "$(jq -r '[.entries[] | to_entries[] | select(.value != null and .value != "" and .value != []) | .key]
+      | map(select(. != "id" and . != "email" and . != "database_name"))
+      | map(if . == "hashed_password" or . == "password" then "kata sandi/hash" elif . == "ip_address" then "alamat IP" else . end)
+      | unique | join(", ")' <<< "$body")"
+
+  # --- Tampilkan Rincian Entri (Username, Password, Hash, IP Address) ---
+  while IFS=$'\t' read -r db user pass hp ip; do
+    local info=""
+    [ -n "$user" ] && info="${info}User: $user | "
+    [ -n "$pass" ] && info="${info}Pass: $pass | "
+    [ -n "$hp" ]   && info="${info}Hash: $hp | "
+    [ -n "$ip" ]   && info="${info}IP: $ip | "
+    info=${info% | }
+    [ -n "$info" ] && addl "Entri ($db)" "$info"
+  done < <(jq -r '.entries[:10][] | [.database_name, .username, .password, .hashed_password, .ip_address] | map(. // "") | @tsv' <<< "$body")
+
+  addk "DeHashed" "https://dehashed.com/"
+  emit dehashed "DeHashed" warn 4 "$n entri di basis data kebocoran"
+}
+
+em_seon() {
+  local e=$1 r code body sc delta=0 state=ok accts
+  local -a _L=() _K=() _F=()
+  r=$(http_get -H "X-API-KEY: $SEON_API_KEY" "https://api.seon.io/SeonRestService/email-api/v2.2/$(urlenc "$e")") || return 1
+  code=${r##*$'\n'}; body=${r%$'\n'*}
+  [ "$code" = 200 ] || return 1
+  jq -e '.data' >/dev/null 2>&1 <<< "$body" || return 1
+  sc=$(jq -r '.data.score // empty' <<< "$body")
+  [ -n "$sc" ] && addl "Skor fraud SEON" "$sc/100 (makin tinggi makin berisiko)"
+  addl "Deliverable" "$(jq -r 'if .data.deliverable == true then "ya" elif .data.deliverable == false then "tidak" else "?" end' <<< "$body")"
+  jq -e '.data.domain_details' >/dev/null 2>&1 <<< "$body" && {
+    addl "Domain" "$(jq -r '.data.domain_details | "dibuat \(.created // "?"), registrar \(.registrar_name // "?"), sekali pakai: \(.disposable), MX valid: \(.valid_mx)"' <<< "$body")"
+  }
+  accts=$(jq -r '(.data.account_details // {}) | to_entries | map(select(.value.registered == true) | .key) | join(", ")' <<< "$body")
+  if [ -n "$accts" ]; then
+    addl "Terdaftar di" "$accts"
+    local x; while IFS= read -r x; do [ -n "$x" ] && addf akun "Terdaftar di $x"; done < <(tr ',' '\n' <<< "$accts" | sed 's/^ *//')
+    delta=$((delta + 8))
+  else addl "Terdaftar di" "tidak ada akun terdeteksi di platform yang dicek SEON"; fi
+  jq -e '.data.breach_details.haveibeenpwned_listed == true' >/dev/null 2>&1 <<< "$body" \
+    && addl "Kebocoran" "tercatat di HaveIBeenPwned ($(jq -r '.data.breach_details.number_of_breaches // "?"' <<< "$body") kebocoran, pertama $(jq -r '.data.breach_details.first_breach // "?"' <<< "$body"))"
+  if [ -n "$sc" ]; then
+    sc=${sc%.*}
+    if [ "$sc" -ge 70 ] 2>/dev/null; then delta=$((delta - 30)); state=bad
+    elif [ "$sc" -le 20 ] 2>/dev/null; then delta=$((delta + 10)); fi
+  fi
+  emit seon "SEON" "$state" "$delta" "${sc:+skor fraud $sc/100}${accts:+, akun di $accts}"
+}
+
+# ---------- 9. pivoting username (tebakan, tanpa permintaan jaringan) ----------
+# Nama sebelum @ sering dipakai juga sebagai username. Ini hanya TEBAKAN: halamannya tidak dibuka,
+# tidak ikut menaikkan skor, dan tidak dimasukkan ke "Temuan pengayaan utama".
+# ---------- 9. pivoting username (ekstraksi & tautan pintar) ----------
+em_pivoting() {
+  local e=$1 l=${1%@*} u
+  local -a _L=() _K=() _F=()
+  u=${l%%+*}
+  
+  if [ "${#u}" -lt 3 ] || [[ $ROLE_LOCAL == *" $u "* ]]; then
+    addl "Username ekstraksi" "Dilewati (nama terlalu pendek atau merupakan akun peran/umum)"
+    emit pivoting "Pivoting username" info 0 "dilewati"
+    return 0
+  fi
+
+  addl "Username terekstrak" "$u"
+  addf username "$u"
+
+  # Tautan Pivoting Lanjutan
+  addk "GitHub Profil" "https://github.com/$u"
+  addk "GitLab Profil" "https://gitlab.com/$u"
+  addk "Instagram Profil" "https://www.instagram.com/$u"
+  addk "Twitter/X Profil" "https://x.com/$u"
+  addk "Telegram Profil" "https://t.me/$u"
+  addk "WhatsMyName OSINT" "https://whatsmyname.app/?q=$u"
+
+  emit pivoting "Pivoting username" ok 5 "Username \"$u\" berhasil diekstrak untuk pivoting OSINT"
+}
+
+# ---------- daftar modul ----------
+# register_em  judul  kategori  fungsi  env-wajib
+EM_NAME=(); EM_CAT=(); EM_FN=(); EM_REQ=()
+register_em() { EM_NAME+=("$1"); EM_CAT+=("$2"); EM_FN+=("$3"); EM_REQ+=("${4:-}"); }
+register_em "Sintaks & alamat"     "Validasi"        em_syntax
+register_em "DNS & server email"   "Validasi"        em_dns
+register_em "Email sekali pakai"   "Validasi"        em_disposable
+register_em "Registrasi domain"    "Validasi"        em_rdap
+register_em "Hunter"               "Validasi"        em_hunter     HUNTER_API_KEY
+register_em "Abstract API"         "Validasi"        em_abstract   ABSTRACT_API_KEY
+register_em "ZeroBounce"           "Validasi"        em_zerobounce ZEROBOUNCE_API_KEY
+register_em "IPQualityScore"       "Validasi"        em_ipqs       IPQS_API_KEY
+register_em "Gravatar"             "Jejak digital"   em_gravatar
+register_em "GitHub"               "Jejak digital"   em_github
+register_em "Kunci PGP"            "Jejak digital"   em_pgp
+register_em "EmailRep"             "Jejak digital"   em_emailrep
+register_em "Pivoting username"    "Jejak digital"   em_pivoting
+register_em "SEON"                 "Jejak digital"   em_seon       SEON_API_KEY
+register_em "Holehe"               "Jejak digital"   em_holehe     cmd:holehe
+register_em "GHunt"                "Jejak digital"   em_ghunt      cmd:ghunt
+register_em "LeakCheck"            "Kebocoran data"  em_leakcheck
+register_em "HaveIBeenPwned"       "Kebocoran data"  em_hibp       HIBP_API_KEY
+register_em "DeHashed"             "Kebocoran data"  em_dehashed   DEHASHED_API_KEY
+
+spin_wait() { # $1=folder $2=total $3=label
+  local dir=$1 total=$2 label=$3 n=0 d frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  while :; do
+    d=$(find "$dir" -name '*.done' | wc -l)
+    [ -t 1 ] && printf '\r  %s%s%s %s %d/%d  ' "$CYN" "${frames[n % 10]}" "$R" "$label" "$d" "$total"
+    [ "$d" -ge "$total" ] && break
+    n=$((n + 1)); sleep 0.1
+  done
+  [ -t 1 ] && printf '\r\033[2K'
+}
+
+ETMP=""
+run_email_scan() { # $1 = email (huruf kecil, sudah valid) ; hasil di $EREPORT dan $MENTIONS
+  local e=$1 started i n=0 id f name cat took
+  started=$(date +%s%N)
+  ETMP=$(mktemp -d)
+  for i in "${!EM_NAME[@]}"; do
+    em_active "${EM_REQ[i]}" || continue
+    n=$((n + 1)); id=$(printf '%03d' "$n")
+    printf '%s|%s' "${EM_NAME[i]}" "${EM_CAT[i]}" > "$ETMP/$id.meta"
+    (
+      set -o pipefail
+      if "${EM_FN[i]}" "$e" > "$ETMP/$id.tmp" 2>/dev/null && jq -e 'type == "object"' "$ETMP/$id.tmp" >/dev/null 2>&1; then
+        mv "$ETMP/$id.tmp" "$ETMP/$id.json"
+      else : > "$ETMP/$id.fail"; fi
+      : > "$ETMP/$id.done"
+    ) &
+  done
+  spin_wait "$ETMP" "$n" "Memeriksa email"
+
+  : > "$ETMP/all.ndjson"
+  for f in "$ETMP"/*.meta; do
+    [ -e "$f" ] || continue
+    id=$(basename "$f" .meta); IFS='|' read -r name cat < "$f"
+    if [ -f "$ETMP/$id.json" ]; then
+      jq -c --arg c "$cat" '. + {category:$c}' "$ETMP/$id.json" >> "$ETMP/all.ndjson"
+    else
+      jq -nc --arg t "$name" --arg c "$cat" \
+        '{id:"gagal", title:$t, state:"fail", delta:0, summary:"tidak bisa dijangkau saat ini", lines:[], links:[], facts:[], category:$c}' >> "$ETMP/all.ndjson"
+    fi
+  done
+  took=$(( ($(date +%s%N) - started) / 1000000 ))
+
+  EREPORT=$(jq -s --arg e "$e" --arg date "$(date -Iseconds)" --argjson took "$took" '
+    . as $m
+    | ($m | map(.delta) | add // 0) as $sum
+    | ([0, ([100, (40 + $sum)] | min)] | max) as $raw
+    | ($m | map(select(.state == "bad" and (.id == "disposable" or .id == "dns" or .id == "syntax"))) | length > 0) as $hard
+    | (if $hard then ([$raw, 20] | min) else $raw end) as $score
+    | { type:"email", email:$e, date:$date, tookMs:$took, score:$score, hardFail:$hard,
+        label:(if $hard then "Berisiko / tidak layak dipercaya"
+               elif $score >= 75 then "Tinggi: kemungkinan besar alamat nyata dan aktif"
+               elif $score >= 50 then "Sedang: tampak wajar, bukti terbatas"
+               elif $score >= 25 then "Rendah: banyak sinyal lemah atau janggal"
+               else "Berisiko / tidak layak dipercaya" end),
+        reasons: ($m | map(select(.delta != 0)) | sort_by(-(.delta | fabs)) | .[:8]
+                  | map({title, delta, summary})),
+        facts: ($m | map(.facts // []) | add // [] | group_by(.t) | map({t:.[0].t, v:(map(.v) | unique)})),
+        modules: $m,
+        checked: ($m | length), failed: ($m | map(select(.state == "fail") | .title)) }' "$ETMP/all.ndjson")
+  rm -rf "$ETMP"; ETMP=""
+
+  # jejak di web: cari alamat persis lewat semua sumber umum yang aktif, hanya yang memuatnya harfiah
+  MENTIONS='{"found":[],"total":0,"skipped":true}'
+  if [ "${EMAIL_WEB_SCAN:-1}" != 0 ]; then
+    SEARCH_MODE=akurat run_scan "\"$e\""
+    MENTIONS=$(jq -c '.found |= (map(.items |= map(select(.rank >= 3))) | map(select(.items | length > 0)))
+        | .total = ([.found[].items | length] | add // 0) | .skipped = false' <<< "$REPORT")
+  fi
+  EREPORT=$(jq -c --argjson m "$MENTIONS" '. + {mentions:$m}' <<< "$EREPORT")
+}
+
+# ---------- tampilan hasil email ----------
+render_email_report() {
+  local score label color filled bar i width
+  score=$(jq -r '.score' <<< "$EREPORT"); label=$(jq -r '.label' <<< "$EREPORT")
+  if [ "$score" -ge 75 ]; then color=$GRN; elif [ "$score" -ge 50 ]; then color=$YEL; else color=$RED; fi
+  filled=$((score / 5)); bar=""
+  for ((i = 0; i < 20; i++)); do [ "$i" -lt "$filled" ] && bar+="█" || bar+="░"; done
+  width=$(( $(tput cols 2>/dev/null || echo 90) - 12 ))
+  printf '  %sSKOR KEPERCAYAAN & KEKAYAAN DATA%s  %s%s %d/100%s\n' "$B" "$R" "$color" "$bar" "$score" "$R"
+  printf '  %s%s%s\n\n' "$color" "$label" "$R"
+
+  jq -r --arg B "$B" --arg D "$D" --arg G "$GRN" --arg Y "$YEL" --arg RD "$RED" --arg C "$CYN" --arg R "$R" --argjson w "$width" '
+    def cut($n): gsub("\\s+";" ") | if length > $n then .[0:$n-1] + "…" else . end;
+    def icon: if .state == "ok" then $G + "●" + $R elif .state == "warn" then $Y + "▲" + $R
+              elif .state == "bad" then $RD + "✖" + $R elif .state == "fail" then $D + "✕" + $R
+              else $D + "○" + $R end;
+    def tl: {nama:"Nama", username:"Username", akun:"Akun / jejak", lokasi:"Lokasi", penyedia:"Penyedia email"};
+    ( if (.facts | length) > 0 then
+        ("  \($B)TEMUAN PENGAYAAN UTAMA\($R)  \($D)(dari sumber publik; belum tentu semuanya milik orang yang sama)\($R)"),
+        (.facts | map(select((tl)[.t] != null)) | sort_by(. as $x | ["nama","username","akun","lokasi","penyedia"] | index($x.t))[]
+          | "  \($D)\((tl)[.t] + (" " * (15 - ((tl)[.t] | length))))\($R)" + (.v | map(cut($w - 20)) | join("\n" + (" " * 17) ))),
+        ""
+      else empty end ),
+    ( .reasons as $r | if ($r | length) > 0 then
+        "  \($B)YANG MEMPENGARUHI SKOR\($R)",
+        ($r[] | "  \(if .delta > 0 then $G + "+" + (.delta|tostring) else $RD + (.delta|tostring) end)\($R) \(.title)  \($D)\(.summary)\($R)"),
+        ""
+      else empty end ),
+    ( .modules | group_by(.category) | sort_by(. as $g | ["Validasi","Jejak digital","Kebocoran data"] | index($g[0].category))[]
+      | "  \($B)\(.[0].category | ascii_upcase)\($R)",
+        (.[] | "  \(icon) \($B)\(.title)\($R) \($D)· \(.summary)\($R)",
+           (.lines[] | "      \($D)\(.k):\($R) \(.v | cut($w - 8))"),
+           (.links[:6][] | "      \($C)\(.u)\($R)"),
+           ""))' <<< "$EREPORT"
+
+  # jejak di web
+  local mt; mt=$(jq -r '.mentions.total // 0' <<< "$EREPORT")
+  printf '  %sJEJAK DI WEB%s\n' "$B" "$R"
+  if [ "$(jq -r '.mentions.skipped // false' <<< "$EREPORT")" = true ]; then
+    printf '  %sDimatikan (EMAIL_WEB_SCAN=0).%s\n\n' "$D" "$R"
+  elif [ "$mt" -eq 0 ]; then
+    printf '  %sTidak ada halaman publik yang memuat alamat ini secara harfiah di sumber yang aktif.%s\n' "$D" "$R"
+    printf '  %sCakupan naik jika SearXNG / Brave / Tavily / Google CSE diisi di Setting.%s\n\n' "$D" "$R"
+  else
+    local REPORT QUERY=$EMAIL
+    REPORT=$(jq -c '.mentions' <<< "$EREPORT")
+    show_report
+  fi
+  local nf; nf=$(jq -r '.failed | length' <<< "$EREPORT")
+  [ "$nf" -gt 0 ] && printf '  %s%s pemeriksaan tidak bisa dijangkau: %s%s\n\n' "$D" "$nf" "$(jq -r '.failed | join(", ")' <<< "$EREPORT")" "$R"
+  printf '  %sSkor adalah perkiraan dari sinyal publik, bukan jaminan. Gunakan dengan bertanggung jawab (UU PDP).%s\n\n' "$D" "$R"
+}
+
+save_email_report() { # mencetak path relatif file .md
+  local dir="$EMAIL_DIR/$(email_slug "$EMAIL")" ts
+  ts=$(date +%Y-%m-%d_%H-%M-%S)
+  mkdir -p "$dir"
+  printf '%s\n' "$EREPORT" > "$dir/$ts.json"
+  jq -r '
+    "# Cek email: \(.email)\n",
+    "Skor kepercayaan **\(.score)/100** · \(.label) · \(.date)\n",
+    (if (.facts | length) > 0 then "## Temuan utama\n", (.facts[] | "- **\(.t)**: \(.v | join("; "))"), "" else empty end),
+    (if (.reasons | length) > 0 then "## Yang mempengaruhi skor\n", (.reasons[] | "- \(if .delta > 0 then "+" else "" end)\(.delta) \(.title): \(.summary)"), "" else empty end),
+    (.modules | group_by(.category)[] | "## \(.[0].category)\n",
+       (.[] | "### \(.title) · \(.summary)\n", (.lines[] | "- \(.k): \(.v)"), (.links[] | "- [\(.t)](\(.u))"), "")),
+    "## Jejak di web\n",
+    (if (.mentions.total // 0) == 0 then "Tidak ada halaman publik yang memuat alamat ini secara harfiah.\n"
+     else (.mentions.found[] | "### \(.source) · \(.category)", (.items[] | "- [\(.title)](\(.url))" + (if .snippet != "" then "\n  \(.snippet)" else "" end)), "") end)
+  ' <<< "$EREPORT" > "$dir/$ts.md"
+  printf '%s' "${dir/#$PWD\//}/$ts.md"
+}
+
+email_do_check() { # $1 = email valid; mengisi EREPORT, MENTIONS, SAVED
+  EMAIL=$1
+  run_email_scan "$EMAIL"
+  SAVED=$(save_email_report)
+}
+
+email_result_screen() {
+  header
+  printf '  Hasil pengayaan untuk: %s%s%s\n\n' "$B" "$EMAIL" "$R"
+  render_email_report
+  [ -n "$SAVED" ] && printf '  %s✓ Tersimpan:%s %s%s%s\n\n' "$GRN" "$R" "$D" "$SAVED" "$R"
+}
+
+email_session() {
+  local notice="" in
+  while :; do
+    header
+    printf '  %sCARI EMAIL & PENGAYAAN OSINT%s  %s(kosongkan lalu Enter untuk kembali)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sValidasi, DNS, domain, jejak publik (Gravatar, GitHub), dan kebocoran data.%s\n\n' "$D" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    printf '  Masukkan alamat email: '
+    read -r in || exit 0
+    in=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<< "$in"); in=${in,,}
+    [ -z "$in" ] && return
+    if ! email_valid "$in"; then
+      notice="Alamat email tidak valid. Contoh: nama@domain.com (huruf, angka, titik, _ % + -)."
+      continue
+    fi
+    header
+    printf '  Memproses dan memperkaya data: %s%s%s\n\n' "$B" "$in" "$R"
+    email_do_check "$in"
+    menu email_result_screen "Cek email lain" "Kembali"
+    [ "$CHOICE" -eq 2 ] && return
+  done
+}
+
+cli_email() {
+  local in=${1,,}
+  email_valid "$in" || { echo "Alamat email tidak valid: $1" >&2; exit 1; }
+  printf 'Memeriksa: %s\n\n' "$in"
+  email_do_check "$in"
+  render_email_report
+  printf '  Tersimpan: %s\n' "$SAVED"
+}
+
+print_email_status() {
+  local i act=0
+  printf '\n  %sCEK EMAIL%s\n' "$B" "$R"
+  for i in "${!EM_NAME[@]}"; do
+    if em_active "${EM_REQ[i]}"; then
+      act=$((act + 1))
+      printf '  %s●%s %-20s %s%s%s\n' "$GRN" "$R" "${EM_NAME[i]}" "$D" "${EM_CAT[i]}" "$R"
+    else
+      printf '  %s○%s %-20s %s%s · %s%s\n' "$D" "$R" "${EM_NAME[i]}" "$D" "${EM_CAT[i]}" \
+        "$([[ ${EM_REQ[i]} == cmd:* ]] && echo "pasang dulu: ${EM_REQ[i]#cmd:} (pipx install ${EM_REQ[i]#cmd:})" || echo "isi di Setting: ${EM_REQ[i]}")" "$R"
+    fi
+  done
+  printf '\n  %s%d dari %d pemeriksaan email aktif%s' "$B" "$act" "${#EM_NAME[@]}" "$R"
+  printf '  %s(jejak web: %s)%s\n' "$D" "$([ "${EMAIL_WEB_SCAN:-1}" = 0 ] && echo mati || echo aktif)" "$R"
+}
+
 # ---------- status sumber ----------
 grid() { # $1=ikon  $2=warna  sisanya=nama; tiga kolom
   local icon=$1 color=$2 n=0 name; shift 2
@@ -868,6 +1805,7 @@ print_status() {
   printf '\n  %s%d dari %d sumber umum aktif%s' "$B" "$act" "$total" "$R"
   printf '  %s(mode pencarian: %s)%s\n' "$D" "$SEARCH_MODE" "$R"
   print_social_status
+  print_email_status
   printf '\n'
   if [ -f "$BASE/.env" ]; then printf '  %sKonfigurasi: %s%s\n' "$D" "$BASE/.env" "$R"
   else printf '  %sBelum ada .env. Buka menu Setting untuk mengisi API yang kamu punya.%s\n' "$D" "$R"; fi
@@ -922,20 +1860,20 @@ view_file() {
   if [ -t 1 ] && command -v less >/dev/null; then less -R "$1"; else cat "$1"; fi
 }
 
-history_session() {
-  local dirs d last n q ans i
+history_browse() { # $1=folder $2=judul $3=ekspresi jq untuk label
+  local base=$1 title=$2 expr=$3 dirs d last n q ans i
   while :; do
     header
-    printf '  %sRIWAYAT HASIL%s\n\n' "$B" "$R"
-    mapfile -t dirs < <(find "$BASE/hasil" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+    printf '  %s%s%s\n\n' "$B" "$title" "$R"
+    mapfile -t dirs < <(find "$base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
     if [ "${#dirs[@]}" -eq 0 ]; then
-      printf '  Belum ada hasil tersimpan. Lakukan pencarian dulu.\n\n'; pause; return
+      printf '  Belum ada hasil tersimpan untuk jenis ini.\n\n'; pause; return
     fi
     i=1
     for d in "${dirs[@]}"; do
       last=$(find "$d" -name '*.md' | sort | tail -n1)
       n=$(find "$d" -name '*.md' | wc -l)
-      q=$(jq -r '.query // empty' "${last%.md}.json" 2>/dev/null); q=${q:-$(basename "$d")}
+      q=$(jq -r "$expr // empty" "${last%.md}.json" 2>/dev/null); q=${q:-$(basename "$d")}
       printf '  %s[%d]%s %s  %s(%d pencarian, terakhir %s)%s\n' "$B$CYN" "$i" "$R" "$q" "$D" "$n" \
         "$(basename "$last" .md)" "$R"
       i=$((i + 1))
@@ -946,6 +1884,27 @@ history_session() {
     if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#dirs[@]} )); then
       view_file "$(find "${dirs[ans-1]}" -name '*.md' | sort | tail -n1)"
     fi
+  done
+}
+
+count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
+
+history_type_screen() {
+  header
+  printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat yang mau dilihat)%s\n\n' "$B" "$R" "$D" "$R"
+}
+
+history_session() {
+  while :; do
+    menu history_type_screen \
+      "Pencarian umum  ($(count_dirs "$BASE/hasil") tersimpan)" \
+      "Cek email  ($(count_dirs "$EMAIL_DIR") tersimpan)" \
+      "Kembali"
+    case "$CHOICE" in
+      1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' ;;
+      2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' ;;
+      3) return ;;
+    esac
   done
 }
 
@@ -964,12 +1923,18 @@ status_screen() {
 # ---------- setting ----------
 # kunci | label | tipe (secret|text|num|bool|choice) | pilihan | petunjuk
 SET_KEY=(SEARXNG_URL TAVILY_API_KEY BRAVE_API_KEY GOOGLE_CSE_KEY GOOGLE_CSE_CX YOUTUBE_API_KEY GITHUB_TOKEN
-         SEARCH_MODE MAX_PER_SOURCE SEARXNG_LANG SOCIAL_SEARCH SOCIAL_BACKEND)
+         HIBP_API_KEY HUNTER_API_KEY ABSTRACT_API_KEY ZEROBOUNCE_API_KEY IPQS_API_KEY EMAILREP_API_KEY
+         DEHASHED_API_KEY SEON_API_KEY
+         SEARCH_MODE MAX_PER_SOURCE SEARXNG_LANG SOCIAL_SEARCH SOCIAL_BACKEND EMAIL_WEB_SCAN)
+SET_SPLIT=15   # jumlah item "kunci & alamat API"; sisanya masuk "Preferensi"
 SET_LABEL=("SearXNG (alamat URL)" "Tavily (API key)" "Brave Search (API key)" "Google CSE (API key)"
            "Google CSE (cx)" "YouTube Data API (key)" "GitHub (token)"
-           "Mode pencarian" "Hasil per sumber di layar" "Bahasa SearXNG" "Cari di media sosial" "Mesin web media sosial")
-SET_TYPE=(text secret secret secret text secret secret choice num text bool choice)
-SET_OPTS=("" "" "" "" "" "" "" "akurat seimbang luas" "" "" "" "auto searxng brave tavily cse")
+           "HaveIBeenPwned (key)" "Hunter (key)" "Abstract Email (key)" "ZeroBounce (key)" "IPQualityScore (key)"
+           "EmailRep (key, opsional)" "DeHashed (key)" "SEON (key)"
+           "Mode pencarian" "Hasil per sumber di layar" "Bahasa SearXNG" "Cari di media sosial" "Mesin web media sosial"
+           "Email: cari jejak di web")
+SET_TYPE=(text secret secret secret text secret secret secret secret secret secret secret secret secret secret choice num text bool choice bool)
+SET_OPTS=("" "" "" "" "" "" "" "" "" "" "" "" "" "" "" "akurat seimbang luas" "" "" "" "auto searxng brave tavily cse" "")
 SET_HINT=(
   "Jalankan ./setup-searxng.sh (terisi otomatis), atau isi alamat SearXNG milikmu, mis. http://127.0.0.1:8888"
   "Daftar di https://tavily.com lalu salin API key dari dashboard."
@@ -983,6 +1948,15 @@ SET_HINT=(
   "Bahasa hasil SearXNG: all, id, en, ..."
   "Ikut cari di media sosial atau tidak."
   "auto memilih SearXNG, Brave, Tavily, lalu Google CSE yang tersedia. Google CSE kuota gratisnya kecil."
+  "Cek email: kebocoran data lengkap (nama kebocoran, tanggal, jenis data). https://haveibeenpwned.com/API/Key (berbayar)."
+  "Cek email: verifikasi + halaman web yang memuat email itu. https://hunter.io/api-keys"
+  "Cek email: skor deliverability dan kualitas. https://www.abstractapi.com/api/email-verification-validation-api"
+  "Cek email: status valid/catch-all/spamtrap, umur domain. https://www.zerobounce.net/members/apikey"
+  "Cek email: skor fraud, honeypot, penyalahgunaan terbaru. https://www.ipqualityscore.com/create-account"
+  "Cek email: reputasi dan profil terdeteksi. Bisa dipakai tanpa key, tapi dibatasi; key dari https://emailrep.io/key"
+  "Cek email: catatan di basis data kebocoran. Hanya nama basis data dan jenis data yang ditampilkan, bukan isinya. https://dehashed.com"
+  "Cek email: skor fraud dan akun yang terdaftar di puluhan platform (butuh paket SEON). https://seon.io"
+  "Cek email: ikut mencari alamat itu di semua sumber umum (web, berita, kode, media sosial). Mati = lebih cepat dan hemat kuota."
 )
 
 mask_value() { # $1=nilai $2=tipe
@@ -996,7 +1970,7 @@ mask_value() { # $1=nilai $2=tipe
 default_for() {
   case "$1" in
     SEARCH_MODE) echo seimbang ;; MAX_PER_SOURCE) echo 5 ;; SEARXNG_LANG) echo all ;;
-    SOCIAL_SEARCH) echo 1 ;; SOCIAL_BACKEND) echo auto ;;
+    SOCIAL_SEARCH) echo 1 ;; SOCIAL_BACKEND) echo auto ;; EMAIL_WEB_SCAN) echo 1 ;;
   esac
 }
 
@@ -1073,8 +2047,8 @@ settings_screen() {
     printf '  %sKunci & alamat API%s\n' "$B" "$R"
     for ((i = 0; i < n; i++)); do
       k=${SET_KEY[i]}; t=${SET_TYPE[i]}; v="${!k:-}"
-      if [ "$i" -eq 7 ]; then printf '\n  %sPreferensi%s\n' "$B" "$R"; fi
-      if [ "$i" -lt 7 ]; then
+      if [ "$i" -eq "$SET_SPLIT" ]; then printf '\n  %sPreferensi%s\n' "$B" "$R"; fi
+      if [ "$i" -lt "$SET_SPLIT" ]; then
         if [ -n "$v" ]; then dot="${GRN}●${R}"; else dot="${D}○${R}"; fi
         printf '  %s[%2d]%s %-26s %s %s\n' "$B$CYN" "$((i + 1))" "$R" "${SET_LABEL[i]}" "$dot" "$(mask_value "$v" "$t")"
       else
@@ -1101,6 +2075,7 @@ settings_screen() {
 
 cleanup() {
   [ -n "$TMP" ] && rm -rf "$TMP"
+  [ -n "${ETMP:-}" ] && rm -rf "$ETMP"
   kill $(jobs -p) 2>/dev/null
 }
 
@@ -1111,6 +2086,7 @@ FINE-U $VERSION
 Pemakaian:
   ./fine-u.sh                 mode interaktif (menu)
   ./fine-u.sh -q "nama"       satu kali cari tanpa menu; hasil disimpan di hasil/
+  ./fine-u.sh -e "a@b.com"    satu kali cek email tanpa menu; hasil disimpan di hasil-email/
   ./fine-u.sh --status        daftar sumber aktif / nonaktif
   ./fine-u.sh --help          bantuan ini
 
@@ -1141,6 +2117,11 @@ main() {
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --status)  check_deps; print_status; exit 0 ;;
+    -e|--email)
+      shift
+      [ -z "${1:-}" ] && { usage; exit 1; }
+      check_deps; trap cleanup EXIT; trap 'exit 130' INT TERM
+      cli_email "$1"; exit 0 ;;
     -q|--query)
       shift
       [ -z "${*:-}" ] && { usage; exit 1; }
@@ -1152,13 +2133,14 @@ main() {
   trap cleanup EXIT
   trap 'exit 130' INT TERM
   while :; do
-    menu header "Mulai cari" "Riwayat hasil" "Status sumber" "Setting" "Keluar"
+    menu header "Mulai cari" "Cari email" "Riwayat hasil" "Status sumber" "Setting" "Keluar"
     case "$CHOICE" in
       1) search_session ;;
-      2) history_session ;;
-      3) status_screen ;;
-      4) settings_screen ;;
-      5) clear_screen; printf '%sSampai jumpa.%s\n' "$D" "$R"; exit 0 ;;
+      2) email_session ;;
+      3) history_session ;;
+      4) status_screen ;;
+      5) settings_screen ;;
+      6) clear_screen; printf '%sSampai jumpa.%s\n' "$D" "$R"; exit 0 ;;
     esac
   done
 }

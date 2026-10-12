@@ -4,4 +4,6 @@
 
 # Data pribadi hasil pencarian & konfigurasi lokal
 hasil/
+hasil-email/
+cache/
 searxng/
