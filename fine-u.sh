@@ -37,6 +37,7 @@ fi
 # ----------------------------------------
 has() { command -v "$1" >/dev/null 2>&1; }
 now() { date +'%Y-%m-%d %H:%M:%S'; }
+die() { printf '  %s[ERROR] %s%s\n\n' "$RED" "$1" "$R" >&2; exit 1; }
 # ---------- konfigurasi (.env) ----------
 # .env dibaca baris per baris sebagai data (TIDAK di-source), dan hanya
 # kunci yang dikenal yang dipakai. Isi .env tidak pernah dieksekusi.

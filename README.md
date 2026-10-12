@@ -8,6 +8,9 @@ lalu hanya menampilkan sumber yang menemukan hasil, lengkap dengan link-nya.
 ## Butuh
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y cloudflared
+sudo snap install ngrok
 sudo apt update && sudo apt install -y pipx
 pipx ensurepath
 pipx install seleniumbase
