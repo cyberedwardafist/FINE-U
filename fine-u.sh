@@ -654,25 +654,74 @@ pick_tunnel_and_run() {
 
 show_link() {
   write_meta ""
-  header
-  printf '%sLink Live Tracking (Lokasi & Kamera Berjalan):%s\n\n' "$GRN$B" "$R"
-  printf '  %s%s%s\n\n' "$B" "$PUBLIC_URL" "$R"
-  qr_print "$PUBLIC_URL"
-  printf '\nTekan %sCtrl+C%s untuk berhenti dan kembali ke menu.\n\n' "$B" "$R"
-  
-  local shown=0 total t kind dev ip n
-  GOT_INT=""; IN_LINK_VIEW=1
-  while [ -z "$GOT_INT" ]; do
-    total=$(wc -l <"$ACCESS_LOG" 2>/dev/null | tr -d ' ')
-    if [ "${total:-0}" -gt "$shown" ]; then
-      while IFS=$'\t' read -r t kind dev ip n; do
-        print_log_line "$t" "$kind" "$dev" "$ip"
-      done < <(tail -n +"$((shown+1))" "$ACCESS_LOG")
-      shown=$total
-    fi
-    read -rsn1 -t 1 key || true
+  while true; do
+    header
+    printf '%sLink Live Tracking (Lokasi & Kamera Berjalan):%s\n\n' "$GRN$B" "$R"
+    printf '  %s%s%s\n\n' "$B" "$PUBLIC_URL" "$R"
+    qr_print "$PUBLIC_URL"
+    printf '\nTekan %sCtrl+C%s untuk berhenti, atau klik [x] / tombol keluar untuk opsi menu.\n\n' "$B" "$R"
+    
+    local shown=0 total t kind dev ip n
+    GOT_INT=""; IN_LINK_VIEW=1
+    
+    # Menangkap log aktivitas akses secara realtime
+    while [ -z "$GOT_INT" ]; do
+      total=$(wc -l <"$ACCESS_LOG" 2>/dev/null | tr -d ' ')
+      if [ "${total:-0}" -gt "$shown" ]; then
+        while IFS=$'\t' read -r t kind dev ip n; do
+          print_log_line "$t" "$kind" "$dev" "$ip"
+        done < <(tail -n +"$((shown+1))" "$ACCESS_LOG")
+        shown=$total
+      fi
+      read -rsn1 -t 1 key || true
+      # Jika terdeteksi sinyal keluar (misal interupsi / tombol keluar)
+      if [ -n "$GOT_INT" ]; then break; fi
+    done
+    
+    IN_LINK_VIEW=""; GOT_INT=""
+    
+    # Matikan server dan tunnel yang sedang berjalan saat tombol keluar/interupsi dipicu
+    stop_all
+
+    # Tampilkan menu pilihan setelah keluar dari sesi aktif
+    header
+    printf '%sSesi live tracking dihentikan.%s\n\n' "$YEL" "$R"
+    printf '  [1] Mulai Lagi\n'
+    printf '  [2] Ganti Template\n'
+    printf '  [3] Ganti Tunnel\n\n'
+    printf 'Masukkan (kosongkan lalu Enter untuk kembali): '
+    read -r subchoice
+    
+    case "$subchoice" in
+      1)
+        # Opsi 1: Template sama, tunnel sama, buat link baru otomatis
+        start_server "$SELECTED_TEMPLATE"
+        if [ "$CUR_TUNNEL" = "ngrok" ]; then
+          start_ngrok
+        else
+          start_cloudflared
+        fi
+        continue
+        ;;
+      2)
+        # Opsi 2: Kembali ke pemilihan template awal
+        return 0
+        ;;
+      3)
+        # Opsi 3: Ganti tunnel dengan template yang baru saja digunakan
+        start_server "$SELECTED_TEMPLATE"
+        if pick_tunnel_and_run; then
+          continue
+        else
+          return 0
+        fi
+        ;;
+      *)
+        # Kosong atau tombol lain -> Kembali ke menu utama
+        return 0
+        ;;
+    esac
   done
-  IN_LINK_VIEW=""; GOT_INT=""
 }
 
 share_project_session() {
