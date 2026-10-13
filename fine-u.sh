@@ -659,12 +659,12 @@ show_link() {
     printf '%sLink Live Tracking (Lokasi & Kamera Berjalan):%s\n\n' "$GRN$B" "$R"
     printf '  %s%s%s\n\n' "$B" "$PUBLIC_URL" "$R"
     qr_print "$PUBLIC_URL"
-    printf '\nTekan %sCtrl+C%s untuk berhenti, atau klik [x] / tombol keluar untuk opsi menu.\n\n' "$B" "$R"
+    printf '\nTekan %sCtrl+C%s untuk keluar total, atau ketik %s[x]%s lalu Enter untuk opsi menu.\n\n' "$B" "$R" "$B" "$R"
     
-    local shown=0 total t kind dev ip n
+    local shown=0 total t kind dev ip n key=""
     GOT_INT=""; IN_LINK_VIEW=1
     
-    # Menangkap log aktivitas akses secara realtime
+    # Loop pemantauan log aktivitas akses secara realtime sekaligus mendeteksi input keyboard (x / X)
     while [ -z "$GOT_INT" ]; do
       total=$(wc -l <"$ACCESS_LOG" 2>/dev/null | tr -d ' ')
       if [ "${total:-0}" -gt "$shown" ]; then
@@ -673,20 +673,24 @@ show_link() {
         done < <(tail -n +"$((shown+1))" "$ACCESS_LOG")
         shown=$total
       fi
+      
+      # Membaca input secara non-blocking (menunggu 1 detik atau input tombol 'x' / 'X')
       read -rsn1 -t 1 key || true
-      # Jika terdeteksi sinyal keluar (misal interupsi / tombol keluar)
-      if [ -n "$GOT_INT" ]; then break; fi
+      if [[ "${key,,}" == "x" ]]; then
+        GOT_INT="exit"
+        break
+      fi
     done
     
     IN_LINK_VIEW=""; GOT_INT=""
     
-    # Matikan server dan tunnel yang sedang berjalan saat tombol keluar/interupsi dipicu
+    # Matikan server dan tunnel yang sedang berjalan saat tombol x dipicu
     stop_all
 
     # Tampilkan menu pilihan setelah keluar dari sesi aktif
     header
     printf '%sSesi live tracking dihentikan.%s\n\n' "$YEL" "$R"
-    printf '  [1] Mulai Lagi\n'
+    printf '  [1] Mulai Ulang\n'
     printf '  [2] Ganti Template\n'
     printf '  [3] Ganti Tunnel\n\n'
     printf 'Masukkan (kosongkan lalu Enter untuk kembali): '
@@ -704,7 +708,7 @@ show_link() {
         continue
         ;;
       2)
-        # Opsi 2: Kembali ke pemilihan template awal
+        # Opsi 2: Kembali ke tampilan pemilihan template
         return 0
         ;;
       3)
